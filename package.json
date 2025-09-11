@@ -1,0 +1,23 @@
+{
+  "name": "bun-chat-app",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "server": "bun run index.ts",
+    "client": "bun run client.ts",
+    "dev": "bun --hot run index.ts",
+    "typecheck": "bun run --check index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/ws": "^8.18.1"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "chalk": "^5.6.2",
+    "ws": "^8.18.3"
+  }
+}
