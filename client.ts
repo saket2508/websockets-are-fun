@@ -1,84 +1,53 @@
-import chalk from 'chalk';
-import readline from 'readline';
-import WebSocket from 'ws';
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
+import kleur from "kleur";
+import prompts from "prompts";
 
-const socket = new WebSocket("ws://localhost:3000");
+const ws = new WebSocket("ws://localhost:3000");
 
-socket.on('open', () => {
-  console.log(chalk.green('🎉 Connected to chat server!'));
-  console.log(chalk.gray('Commands: /help, /quit'));
-  showPrompt();
-});
+ws.onopen = () => {
+  console.log(kleur.green("Connected to the chat server!"));
+  // Start the input loop once connected
+  main(); 
+};
 
-socket.on('message', (data: WebSocket.RawData) => {
-  console.log('\n' + chalk.blue('📨 ') + data.toString());
-  showPrompt();
-});
+ws.onmessage = (event) => {
+  // We need to clear the current line where the user might be typing
+  // and then print the message. This is a simple way to handle UI.
+  process.stdout.clearLine(0);
+  process.stdout.cursorTo(0);
+  console.log(event.data);
+};
 
-socket.on('error', (error: Error) => {
-  console.error(chalk.red('WebSocket error:'), error.message);
-});
-
-socket.on('close', () => {
-  console.log(chalk.yellow('Disconnected from server'));
-  rl.close();
+ws.onclose = () => {
+  console.log(kleur.red("Disconnected from the server."));
   process.exit(0);
-});
+};
 
-function showPrompt() {
-  rl.question(chalk.cyan('You: '), (input: string) => {
-    const trimmedInput = input.trim();
+ws.onerror = (error) => {
+  console.error(kleur.red("WebSocket error:"), error);
+  process.exit(1);
+};
 
-    if (trimmedInput.startsWith('/')) {
-      handleCommand(trimmedInput);
-    } else if (trimmedInput) {
-      socket.send(trimmedInput);
-    } else {
-      showPrompt(); // Empty input, show prompt again
+async function main() {
+  while (ws.readyState === WebSocket.OPEN) {
+    const response = await prompts({
+      type: "text",
+      name: "message",
+      message: "", // No message label to keep it clean
+      // A little trick to make the input line look nice
+      prefix: kleur.bold().cyan("> "), 
+    });
+
+    if (response.message && response.message.trim() !== "") {
+      ws.send(response.message);
+    } else if (response.message === undefined) {
+        // User pressed Ctrl+C
+        ws.close();
+        break;
     }
-  });
-}
-
-function handleCommand(cmd: string) {
-  const [command] = cmd.slice(1).split(' ');
-
-  switch (command) {
-    case 'quit':
-    case 'exit':
-      console.log(chalk.yellow('Goodbye! 👋'));
-      socket.close();
-      rl.close();
-      break;
-
-    case 'help':
-      console.log(chalk.yellow('\n📚 Available commands:'));
-      console.log('   /quit or /exit - Exit chat');
-      console.log('   /help - Show this help');
-      console.log('   /clear - Clear screen');
-      showPrompt();
-      break;
-
-    case 'clear':
-      console.clear();
-      showPrompt();
-      break;
-
-    default:
-      console.log(chalk.red(`❌ Unknown command: ${command}`));
-      console.log(chalk.gray('Type /help for available commands'));
-      showPrompt();
+    
+    // A small delay to prevent typing indicators from firing too often
+    // In a real client, we would send the typing indicator here based on input events
+    // For now, we'll just send the message.
   }
 }
-
-// Handle Ctrl+C gracefully
-rl.on('SIGINT', () => {
-  console.log(chalk.yellow('\n👋 Goodbye!'));
-  socket.close();
-  rl.close();
-  process.exit(0);
-});
