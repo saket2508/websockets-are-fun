@@ -52,7 +52,7 @@ const server = Bun.serve({
     },
     message(ws: ServerWebSocket<WebsocketData>, message) {
       const chatMessage = `${ws.data.username}: ${message}`;
-      ws.publish("the-chat-room", chatMessage); // broadcast to all members except sender
+      server.publish("the-chat-room", chatMessage); // broadcast to all members except sender
     },
     close(ws: ServerWebSocket<WebsocketData>) {
       console.log(`${ws.data.username} has left the chat`);
