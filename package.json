@@ -5,24 +5,22 @@
   "private": true,
   "scripts": {
     "server": "bun run index.ts",
-    "client": "bun run client.ts",
+    "client": "bun run client.tsx",
     "dev": "bun --hot run index.ts",
-    "typecheck": "bun run --check index.ts"
+    "typecheck": "bunx tsc --noEmit",
+    "db:migrate": "bun run src/server/database.ts --migrate",
+    "db:seed": "bun run scripts/seed.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/ws": "^8.18.1"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
+    "@types/react": "^19.0.1",
+    "typescript": "^5.7.3"
   },
   "dependencies": {
-    "@types/prompts": "^2.4.9",
-    "chalk": "^5.6.2",
     "ink": "^6.3.0",
     "kleur": "^4.1.5",
-    "prompts": "^2.4.2",
+    "nanoid": "^5.1.0",
     "react": "^19.1.1",
-    "ws": "^8.18.3"
+    "zod": "^3.23.8"
   }
 }
