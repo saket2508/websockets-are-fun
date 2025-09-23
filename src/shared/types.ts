@@ -142,7 +142,7 @@ export type GatewayServerEvent =
   | { type: "connection_ack"; sessionId: Snowflake; user: User }
   | { type: "guild_bootstrap"; guild: Guild; channels: Channel[]; members: Member[] }
   | { type: "history_batch"; batch: HistoricalMessageBatch }
-  | { type: "message_created"; message: Message; author: User; reactions: Reaction[] }
+  | { type: "message_created"; message: Message; author: User; reactions: Reaction[]; clientId?: Snowflake }
   | { type: "message_updated"; message: Message }
   | { type: "message_deleted"; messageId: Snowflake; channelId: Snowflake }
   | { type: "presence_updated"; presence: PresenceEvent }
@@ -152,7 +152,7 @@ export type GatewayServerEvent =
       userId: Snowflake;
       expiresAt: ISO8601Timestamp;
     }
-  | { type: "command_error"; command: CommandName; error: string };
+  | { type: "command_error"; command: CommandName; error: string; clientId?: Snowflake };
 
 // Client → server gateway intents.
 export type GatewayClientEvent =
@@ -164,6 +164,7 @@ export type GatewayClientEvent =
       channelId: Snowflake;
       content: string;
       replyToId?: Snowflake | null;
+      clientId?: Snowflake;
     }
   | { type: "emit_command"; command: SlashCommand }
   | { type: "ack_history"; channelId: Snowflake; messageIds: Snowflake[] };

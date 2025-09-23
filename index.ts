@@ -45,7 +45,13 @@ const clientEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("auth_init"), token: z.string().nullable() }),
   z.object({ type: z.literal("join_channel"), channelId: z.string(), limit: z.number().min(1).max(100).optional() }),
   z.object({ type: z.literal("leave_channel"), channelId: z.string() }),
-  z.object({ type: z.literal("send_message"), channelId: z.string(), content: z.string().min(1), replyToId: z.string().nullable().optional() }),
+  z.object({
+    type: z.literal("send_message"),
+    channelId: z.string(),
+    content: z.string().min(1),
+    replyToId: z.string().nullable().optional(),
+    clientId: z.string().optional(),
+  }),
   z.object({ type: z.literal("emit_command"), command: z.any() }),
   z.object({ type: z.literal("ack_history"), channelId: z.string(), messageIds: z.array(z.string()) }),
 ]);
@@ -295,6 +301,7 @@ const server = Bun.serve({
                 type: "command_error",
                 command: "history",
                 error: "Channel not found",
+                clientId: event.clientId ?? undefined,
               }),
             );
             return;
@@ -306,6 +313,7 @@ const server = Bun.serve({
                 type: "command_error",
                 command: "history",
                 error: "Join the channel before sending messages",
+                clientId: event.clientId ?? undefined,
               }),
             );
             return;
@@ -324,6 +332,7 @@ const server = Bun.serve({
             message: messageRecord,
             author: ws.data.user,
             reactions: [],
+            clientId: event.clientId ?? undefined,
           };
 
           server.publish(channelTopic(channel.id), serializeEvent(payload));

@@ -32,6 +32,48 @@ const TOKEN_ALPHABET = `${ID_ALPHABET.toLowerCase()}${ID_ALPHABET}`;
 const makeId = customAlphabet(ID_ALPHABET, 18);
 const makeToken = customAlphabet(TOKEN_ALPHABET, 64);
 
+const ADJECTIVES = [
+  "Brave",
+  "Cozy",
+  "Cosmic",
+  "Crimson",
+  "Crystal",
+  "Electric",
+  "Golden",
+  "Misty",
+  "Nebula",
+  "Nova",
+  "Silver",
+  "Starry",
+  "Swift",
+  "Verdant",
+  "Vivid",
+] as const;
+
+const NOUNS = [
+  "Aurora",
+  "Beacon",
+  "Comet",
+  "Ember",
+  "Harbor",
+  "Horizon",
+  "Lumen",
+  "Meadow",
+  "Nimbus",
+  "Orbit",
+  "Prairie",
+  "Quill",
+  "Ridge",
+  "River",
+  "Solstice",
+] as const;
+
+const generateDisplayName = (): string => {
+  const adjective = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)] ?? "Bright";
+  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)] ?? "Voyager";
+  return `${adjective} ${noun}`;
+};
+
 export type Session = {
   id: Snowflake;
   token: string;
@@ -57,12 +99,14 @@ export const createGuestSession = (displayName?: string) => {
   const expiresAt = ensureISO8601(Date.now() + 1000 * 60 * 60 * 24 * 7); // +7 days
 
   const guildIds = getDefaultGuildIds();
+  const trimmedDisplayName = displayName?.trim();
+  const resolvedDisplayName = trimmedDisplayName && trimmedDisplayName.length > 0 ? trimmedDisplayName : generateDisplayName();
 
   const create = db.transaction(() => {
     db.query(
       `INSERT INTO users (id, username, display_name, avatar_url, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(userId, username, displayName ?? null, null, "online", createdAt, createdAt);
+    ).run(userId, username, resolvedDisplayName, null, "online", createdAt, createdAt);
 
     db.query(
       `INSERT INTO sessions (id, user_id, token, created_at, expires_at)
@@ -82,7 +126,7 @@ export const createGuestSession = (displayName?: string) => {
   const userRow: UserRow = {
     id: userId,
     username,
-    display_name: displayName ?? null,
+    display_name: resolvedDisplayName,
     avatar_url: null,
     status: "online",
     created_at: createdAt,
