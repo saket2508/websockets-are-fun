@@ -106,6 +106,8 @@ export type CommandName =
   | "thread"
   | "dm"
   | "react"
+  | "edit"
+  | "delete"
   | "reply"
   | "history";
 
@@ -143,8 +145,9 @@ export type GatewayServerEvent =
   | { type: "guild_bootstrap"; guild: Guild; channels: Channel[]; members: Member[] }
   | { type: "history_batch"; batch: HistoricalMessageBatch }
   | { type: "message_created"; message: Message; author: User; reactions: Reaction[]; clientId?: Snowflake }
-  | { type: "message_updated"; message: Message }
-  | { type: "message_deleted"; messageId: Snowflake; channelId: Snowflake }
+  | { type: "reactions_updated"; messageId: Snowflake; channelId: Snowflake; reactions: Reaction[] }
+  | { type: "message_updated"; message: Message; clientRequestId?: string }
+  | { type: "message_deleted"; messageId: Snowflake; channelId: Snowflake; clientRequestId?: string }
   | { type: "presence_updated"; presence: PresenceEvent }
   | {
       type: "typing_started";
@@ -165,6 +168,18 @@ export type GatewayClientEvent =
       content: string;
       replyToId?: Snowflake | null;
       clientId?: Snowflake;
+    }
+  | { type: "toggle_reaction"; messageId: Snowflake; emoji: string }
+  | {
+      type: "edit_message";
+      messageId: Snowflake;
+      content: string;
+      clientRequestId?: string;
+    }
+  | {
+      type: "delete_message";
+      messageId: Snowflake;
+      clientRequestId?: string;
     }
   | { type: "emit_command"; command: SlashCommand }
   | { type: "ack_history"; channelId: Snowflake; messageIds: Snowflake[] };

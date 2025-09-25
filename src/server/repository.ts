@@ -22,6 +22,7 @@ import type {
   Guild,
   HistoricalMessageBatch,
   Message,
+  Reaction,
   Snowflake,
   User,
 } from "../shared/types";
@@ -232,6 +233,14 @@ export const getChannelById = (channelId: Snowflake): Channel | null => {
   return row ? mapChannelRow(row) : null;
 };
 
+export const getMessageById = (messageId: Snowflake): Message | null => {
+  const row = db
+    .query(`SELECT * FROM messages WHERE id = ? LIMIT 1`)
+    .get(messageId) as MessageRow | undefined;
+
+  return row ? mapMessageRow(row) : null;
+};
+
 // Trust-but-verify guard to ensure callers honour guild membership.
 export const userHasAccessToGuild = (
   userId: Snowflake,
@@ -271,6 +280,56 @@ export const appendMessage = (input: {
   };
 
   return mapMessageRow(row);
+};
+
+export const updateMessageContent = (input: {
+  messageId: Snowflake;
+  authorId: Snowflake;
+  content: string;
+}): Message | null => {
+  const existing = db
+    .query(`SELECT * FROM messages WHERE id = ? LIMIT 1`)
+    .get(input.messageId) as MessageRow | undefined;
+
+  if (!existing || existing.author_id !== input.authorId) {
+    return null;
+  }
+
+  const updatedAt = now();
+  const trimmedContent = input.content.trim();
+
+  if (trimmedContent.length === 0) {
+    return null;
+  }
+
+  db
+    .query(`UPDATE messages SET content = ?, updated_at = ? WHERE id = ?`)
+    .run(trimmedContent, updatedAt, input.messageId);
+
+  const nextRow: MessageRow = {
+    ...existing,
+    content: trimmedContent,
+    updated_at: updatedAt,
+  };
+
+  return mapMessageRow(nextRow);
+};
+
+export const deleteMessageById = (input: {
+  messageId: Snowflake;
+  authorId: Snowflake;
+}): Message | null => {
+  const existing = db
+    .query(`SELECT * FROM messages WHERE id = ? LIMIT 1`)
+    .get(input.messageId) as MessageRow | undefined;
+
+  if (!existing || existing.author_id !== input.authorId) {
+    return null;
+  }
+
+  db.query(`DELETE FROM messages WHERE id = ?`).run(input.messageId);
+
+  return mapMessageRow(existing);
 };
 
 // Row shape used by fetchChannelHistory's JOIN query.
@@ -357,6 +416,46 @@ export const fetchChannelHistory = (input: {
     channelId: input.channelId,
     messages,
     fetchedAt: now(),
+  };
+};
+
+const listReactionsForMessage = (messageId: Snowflake): Reaction[] => {
+  const rows = db
+    .query(`SELECT * FROM reactions WHERE message_id = ?`)
+    .all(messageId) as ReactionRow[];
+
+  return rows.map(mapReactionRow);
+};
+
+export const toggleReaction = (input: {
+  messageId: Snowflake;
+  emoji: string;
+  userId: Snowflake;
+}): { reactions: Reaction[]; added: boolean } => {
+  const existing = db
+    .query(
+      `SELECT 1 FROM reactions WHERE message_id = ? AND emoji = ? AND author_id = ? LIMIT 1`,
+    )
+    .get(input.messageId, input.emoji, input.userId) as { 1: number } | undefined;
+
+  if (existing) {
+    db
+      .query(`DELETE FROM reactions WHERE message_id = ? AND emoji = ? AND author_id = ?`)
+      .run(input.messageId, input.emoji, input.userId);
+
+    return {
+      reactions: listReactionsForMessage(input.messageId),
+      added: false,
+    };
+  }
+
+  db
+    .query(`INSERT INTO reactions (message_id, emoji, author_id, created_at) VALUES (?, ?, ?, ?)`)
+    .run(input.messageId, input.emoji, input.userId, now());
+
+  return {
+    reactions: listReactionsForMessage(input.messageId),
+    added: true,
   };
 };
 

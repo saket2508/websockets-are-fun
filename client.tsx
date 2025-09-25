@@ -36,6 +36,15 @@ const statusColour = (status: ConnectionPhase): string => {
   }
 };
 
+type ComposerMode =
+  | null
+  | {
+      type: "edit";
+      messageId: Snowflake;
+      channelId: Snowflake;
+      originalContent: string;
+    };
+
 type GuestSession = {
   id: Snowflake;
   token: string;
@@ -230,11 +239,14 @@ const MessageLayout = () => {
   const dispatch = useClientDispatch();
   const gatewayRef = useGateway();
   const [composerValue, setComposerValue] = useState<string>("");
+  const [composerMode, setComposerMode] = useState<ComposerMode>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [currentFocus, setCurrentFocus] = useState<FocusTarget>("channels");
   const [messageOffset, setMessageOffset] = useState<number>(0);
   const acknowledgedHistory = useRef<Map<string, string>>(new Map());
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
+  const [selectedMessageId, setSelectedMessageId] = useState<Snowflake | null>(null);
+  const commandError = state.ui.commandError;
 
   useClientBootstrap(gatewayRef, setAuthError);
 
@@ -288,10 +300,6 @@ const MessageLayout = () => {
   );
 
   useEffect(() => {
-    setMessageOffset(0);
-  }, [state.ui.activeChannelId]);
-
-  useEffect(() => {
     if (
       !state.ui.activeChannelId ||
       !messageLog ||
@@ -337,6 +345,32 @@ const MessageLayout = () => {
   const hasOlder = startIndex > 0;
   const hasNewer = endIndex < totalMessages;
   const optimisticForRender = hasNewer ? [] : optimisticForChannel;
+  const selectedMessage = useMemo(() => {
+    if (!selectedMessageId) {
+      return null;
+    }
+    return persistedMessages.find((message) => message.id === selectedMessageId) ?? null;
+  }, [persistedMessages, selectedMessageId]);
+
+  useEffect(() => {
+    if (state.ui.activeChannelId) {
+      const latest = persistedMessages[persistedMessages.length - 1];
+      setSelectedMessageId(latest?.id ?? null);
+    } else {
+      setSelectedMessageId(null);
+    }
+    setMessageOffset(0);
+    setComposerMode(null);
+    setComposerValue("");
+    dispatch({ type: "ui/setCommandError", message: null });
+  }, [dispatch, state.ui.activeChannelId]);
+
+  useEffect(() => {
+    const latestVisible = visibleMessages[visibleMessages.length - 1];
+    if (latestVisible) {
+      setSelectedMessageId(latestVisible.id);
+    }
+  }, [visibleMessages]);
 
   const handleGuildCycle = (direction: 1 | -1) => {
     const nextGuildId = cycleGuild(
@@ -364,6 +398,267 @@ const MessageLayout = () => {
     }
   };
 
+  const handleReactCommand = (input: string): boolean => {
+    if (!input.startsWith("/react")) {
+      return false;
+    }
+
+    if (!state.session) {
+      dispatch({ type: "ui/setCommandError", message: "Sign in before reacting." });
+      return true;
+    }
+
+    const channelId = state.ui.activeChannelId;
+    if (!channelId) {
+      dispatch({ type: "ui/setCommandError", message: "Select a channel before reacting." });
+      return true;
+    }
+
+    const args = input.slice("/react".length).trim();
+    if (!args) {
+      dispatch({ type: "ui/setCommandError", message: "Usage: /react <emoji> [messageId]" });
+      return true;
+    }
+
+    const parts = args.split(/\s+/);
+    let emojiPart = "";
+    let messageId: Snowflake | null = null;
+
+    if (parts.length > 1) {
+      messageId = parts[0] as Snowflake;
+      emojiPart = parts.slice(1).join(" ");
+    } else {
+      emojiPart = parts[0] ?? "";
+    }
+
+    const emoji = emojiPart.trim();
+    if (!emoji) {
+      dispatch({ type: "ui/setCommandError", message: "Provide an emoji to react with." });
+      return true;
+    }
+
+    let targetMessageId = messageId;
+    const channelLog = state.messagesByChannel[channelId];
+    if (!targetMessageId) {
+      if (selectedMessage) {
+        targetMessageId = selectedMessage.id;
+      } else {
+        const latestMessage = channelLog?.messages[channelLog.messages.length - 1];
+        if (!latestMessage) {
+          dispatch({ type: "ui/setCommandError", message: "No messages available to react to yet." });
+          return true;
+        }
+        targetMessageId = latestMessage.id;
+      }
+    } else {
+      const exists = channelLog?.messages.some((message) => message.id === targetMessageId);
+      if (!exists) {
+        dispatch({ type: "ui/setCommandError", message: "Message not found in this channel." });
+        return true;
+      }
+    }
+
+    dispatch({
+      type: "channel/reactionOptimisticToggled",
+      payload: {
+        channelId,
+        messageId: targetMessageId,
+        emoji,
+        userId: state.session.user.id,
+      },
+    });
+    gatewayRef.current?.toggleReaction(targetMessageId, emoji);
+    dispatch({ type: "ui/setCommandError", message: null });
+    setComposerValue("");
+    return true;
+  };
+
+  const resolveMessageTarget = (
+    channelId: Snowflake,
+    explicitId: Snowflake | null,
+  ): EnrichedMessage | null => {
+    const channelLog = state.messagesByChannel[channelId];
+    if (!channelLog || channelLog.messages.length === 0) {
+      return null;
+    }
+
+    if (explicitId) {
+      return channelLog.messages.find((message) => message.id === explicitId) ?? null;
+    }
+
+    if (selectedMessage) {
+      return selectedMessage;
+    }
+
+    return channelLog.messages[channelLog.messages.length - 1] ?? null;
+  };
+
+  const enterEditMode = (message: EnrichedMessage) => {
+    setComposerMode({
+      type: "edit",
+      messageId: message.id,
+      channelId: message.channelId,
+      originalContent: message.content,
+    });
+    setComposerValue(message.content);
+    dispatch({ type: "ui/setCommandError", message: null });
+    setCurrentFocus("composer");
+  };
+
+  const dispatchEditMutation = (message: EnrichedMessage, nextContent: string) => {
+    const requestId = makeOptimisticId();
+    const optimisticUpdatedAt = new Date().toISOString();
+
+    dispatch({
+      type: "channel/messageEditOptimistic",
+      payload: {
+        channelId: message.channelId,
+        messageId: message.id,
+        nextContent,
+        requestId,
+        optimisticUpdatedAt,
+      },
+    });
+
+    gatewayRef.current?.editMessage({
+      messageId: message.id,
+      content: nextContent,
+      clientRequestId: requestId,
+    });
+
+    setComposerMode(null);
+    setComposerValue("");
+    dispatch({ type: "ui/setCommandError", message: null });
+  };
+
+  const dispatchDeleteMutation = (message: EnrichedMessage) => {
+    const requestId = makeOptimisticId();
+
+    dispatch({
+      type: "channel/messageDeleteOptimistic",
+      payload: {
+        channelId: message.channelId,
+        messageId: message.id,
+        requestId,
+      },
+    });
+
+    gatewayRef.current?.deleteMessage({
+      messageId: message.id,
+      clientRequestId: requestId,
+    });
+
+    if (composerMode?.type === "edit" && composerMode.messageId === message.id) {
+      setComposerMode(null);
+      setComposerValue("");
+    }
+
+    dispatch({ type: "ui/setCommandError", message: null });
+  };
+
+  const handleEditCommand = (input: string): boolean => {
+    if (!input.startsWith("/edit")) {
+      return false;
+    }
+
+    if (!state.session) {
+      dispatch({ type: "ui/setCommandError", message: "Sign in before editing." });
+      return true;
+    }
+
+    const channelId = state.ui.activeChannelId;
+    if (!channelId) {
+      dispatch({ type: "ui/setCommandError", message: "Select a channel before editing." });
+      return true;
+    }
+
+    const channelLog = state.messagesByChannel[channelId];
+    if (!channelLog || channelLog.messages.length === 0) {
+      dispatch({ type: "ui/setCommandError", message: "No messages available to edit." });
+      return true;
+    }
+
+    const args = input.slice("/edit".length).trim();
+    const parts = args.length > 0 ? args.split(/\s+/) : [];
+    let targetId: Snowflake | null = null;
+    let editedContent: string | null = null;
+
+    if (parts.length > 0) {
+      const candidateId = parts[0] as Snowflake;
+      const exists = channelLog.messages.some((message) => message.id === candidateId);
+      if (exists) {
+        targetId = candidateId;
+        editedContent = args.slice(candidateId.length).trim();
+      } else {
+        editedContent = args;
+      }
+    }
+
+    const targetMessage = resolveMessageTarget(channelId, targetId);
+    if (!targetMessage) {
+      dispatch({ type: "ui/setCommandError", message: "Message not found in this channel." });
+      return true;
+    }
+
+    if (targetMessage.author.id !== state.session.user.id) {
+      dispatch({ type: "ui/setCommandError", message: "You can only edit your own messages." });
+      return true;
+    }
+
+    if (!editedContent || editedContent.length === 0) {
+      enterEditMode(targetMessage);
+      return true;
+    }
+
+    const trimmedContent = editedContent.trim();
+    if (!trimmedContent) {
+      dispatch({ type: "ui/setCommandError", message: "Edited message cannot be empty." });
+      return true;
+    }
+
+    if (trimmedContent === targetMessage.content) {
+      dispatch({ type: "ui/setCommandError", message: "Message content is unchanged." });
+      return true;
+    }
+
+    dispatchEditMutation(targetMessage, trimmedContent);
+    return true;
+  };
+
+  const handleDeleteCommand = (input: string): boolean => {
+    if (!input.startsWith("/delete")) {
+      return false;
+    }
+
+    if (!state.session) {
+      dispatch({ type: "ui/setCommandError", message: "Sign in before deleting." });
+      return true;
+    }
+
+    const channelId = state.ui.activeChannelId;
+    if (!channelId) {
+      dispatch({ type: "ui/setCommandError", message: "Select a channel before deleting." });
+      return true;
+    }
+
+    const args = input.slice("/delete".length).trim();
+    const explicitId = args.length > 0 ? (args.split(/\s+/)[0] as Snowflake) : null;
+    const targetMessage = resolveMessageTarget(channelId, explicitId);
+    if (!targetMessage) {
+      dispatch({ type: "ui/setCommandError", message: "Message not found in this channel." });
+      return true;
+    }
+
+    if (targetMessage.author.id !== state.session.user.id) {
+      dispatch({ type: "ui/setCommandError", message: "You can only delete your own messages." });
+      return true;
+    }
+
+    dispatchDeleteMutation(targetMessage);
+    setComposerValue("");
+    return true;
+  };
+
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       gatewayRef.current?.stop();
@@ -380,6 +675,13 @@ const MessageLayout = () => {
       if (key.escape || key.return) {
         setCommandPaletteOpen(false);
       }
+      return;
+    }
+
+    if (composerMode && key.escape) {
+      setComposerMode(null);
+      setComposerValue("");
+      dispatch({ type: "ui/setCommandError", message: null });
       return;
     }
 
@@ -417,16 +719,87 @@ const MessageLayout = () => {
       return;
     }
 
+    if (currentFocus === "messages" && !key.ctrl && !key.meta && input.length === 1) {
+      const lower = input.toLowerCase();
+      if (lower === "e") {
+        if (!selectedMessage) {
+          dispatch({ type: "ui/setCommandError", message: "No message selected to edit." });
+          return;
+        }
+        if (!state.session || selectedMessage.author.id !== state.session.user.id) {
+          dispatch({ type: "ui/setCommandError", message: "You can only edit your own messages." });
+          return;
+        }
+        enterEditMode(selectedMessage);
+        return;
+      }
+      if (lower === "x") {
+        if (!selectedMessage) {
+          dispatch({ type: "ui/setCommandError", message: "No message selected to delete." });
+          return;
+        }
+        if (!state.session || selectedMessage.author.id !== state.session.user.id) {
+          dispatch({ type: "ui/setCommandError", message: "You can only delete your own messages." });
+          return;
+        }
+        dispatchDeleteMutation(selectedMessage);
+        return;
+      }
+    }
+
     if (currentFocus === "composer") {
       if (key.return) {
         const trimmed = composerValue.trim();
+        if (!trimmed) {
+          return;
+        }
+
+        if (composerMode?.type === "edit") {
+          const channelMessages = state.messagesByChannel[composerMode.channelId]?.messages ?? [];
+          const targetMessage = channelMessages.find((message) => message.id === composerMode.messageId);
+          if (!targetMessage) {
+            dispatch({ type: "ui/setCommandError", message: "Original message no longer available." });
+            setComposerMode(null);
+            setComposerValue("");
+            return;
+          }
+
+          if (targetMessage.author.id !== state.session?.user.id) {
+            dispatch({ type: "ui/setCommandError", message: "You can only edit your own messages." });
+            setComposerMode(null);
+            setComposerValue("");
+            return;
+          }
+
+          if (trimmed === composerMode.originalContent.trim()) {
+            dispatch({ type: "ui/setCommandError", message: "Message content is unchanged." });
+            return;
+          }
+
+          dispatchEditMutation(targetMessage, trimmed);
+          return;
+        }
+
+        if (handleReactCommand(trimmed)) {
+          return;
+        }
+
+        if (handleEditCommand(trimmed)) {
+          return;
+        }
+
+        if (handleDeleteCommand(trimmed)) {
+          return;
+        }
+
         const channelId = state.ui.activeChannelId;
-        if (!trimmed || !channelId) {
+        if (!channelId) {
           return;
         }
         const clientId = makeOptimisticId();
         const createdAt = new Date().toISOString();
         setMessageOffset(0);
+        dispatch({ type: "ui/setCommandError", message: null });
         dispatch({
           type: "channel/optimisticQueued",
           payload: {
@@ -451,7 +824,7 @@ const MessageLayout = () => {
         return;
       }
 
-      if (input.length === 1 && !key.ctrl && !key.meta) {
+      if (!key.ctrl && !key.meta && input.length > 0) {
         setComposerValue((prev) => prev + input);
       }
       return;
@@ -481,16 +854,33 @@ const MessageLayout = () => {
           scroll · CTRL+P for command palette
         </Text>
       </Box>
+      {commandError ? (
+        <Box marginBottom={1}>
+          <Text color="red">{commandError}</Text>
+        </Box>
+      ) : null}
       {commandPaletteOpen ? (
         <Box
           marginBottom={1}
           borderStyle="round"
           borderColor="cyan"
           paddingX={1}
+          paddingY={0}
+          flexDirection="column"
+          gap={0}
         >
-          <Text color="cyan">
-            Command palette coming soon… (ESC to dismiss)
+          <Text color="cyan">Quick Commands & Shortcuts (ESC to dismiss)</Text>
+          <Text>
+            {kleur.cyan("Navigation: ")}TAB/SHIFT+TAB cycle panes · ↑/↓ scroll messages · ←/→ move focus
           </Text>
+          <Text>
+            {kleur.cyan("Composer: ")}/react &lt;emoji&gt; [messageId] · /edit to prefill composer · /delete [messageId]
+          </Text>
+          <Text>
+            {kleur.cyan("Messages: ")}E edit selected · X delete selected · ENTER opens composer
+          </Text>
+          <Text>{kleur.cyan("System: ")}CTRL+P toggle help · CTRL+C quit</Text>
+          <Text color="gray">Commands and shortcuts default to the selected message when no id is supplied.</Text>
         </Box>
       ) : null}
       <Box flexDirection="row" gap={1}>
@@ -513,6 +903,8 @@ const MessageLayout = () => {
           authError={authError}
           hasOlder={hasOlder}
           hasNewer={hasNewer}
+          currentUserId={state.session?.user.id ?? null}
+          selectedMessageId={selectedMessageId}
         />
         <MemberList
           members={state.members}
@@ -521,8 +913,17 @@ const MessageLayout = () => {
         />
       </Box>
       <Box marginTop={1}>
-        <Composer value={composerValue} focus={currentFocus === "composer"} />
+        <Composer
+          value={composerValue}
+          focus={currentFocus === "composer"}
+          mode={composerMode?.type === "edit" ? "edit" : "compose"}
+        />
       </Box>
+      {composerMode?.type === "edit" ? (
+        <Box marginTop={0}>
+          <Text color="yellow">Editing message – press ENTER to save or ESC to cancel</Text>
+        </Box>
+      ) : null}
     </Box>
   );
 };

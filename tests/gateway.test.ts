@@ -56,6 +56,46 @@ describe("GatewayClient", () => {
     });
   });
 
+  test("toggleReaction sends toggle_reaction payload", () => {
+    const { gateway, sent } = createStubbedGateway();
+
+    gateway.toggleReaction("msg-1", ":thumbsup:");
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toEqual({
+      type: "toggle_reaction",
+      messageId: "msg-1",
+      emoji: ":thumbsup:",
+    });
+  });
+
+  test("editMessage sends edit_message payload", () => {
+    const { gateway, sent } = createStubbedGateway();
+
+    gateway.editMessage({ messageId: "msg-1", content: "Edited", clientRequestId: "req-1" });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toEqual({
+      type: "edit_message",
+      messageId: "msg-1",
+      content: "Edited",
+      clientRequestId: "req-1",
+    });
+  });
+
+  test("deleteMessage sends delete_message payload", () => {
+    const { gateway, sent } = createStubbedGateway();
+
+    gateway.deleteMessage({ messageId: "msg-2", clientRequestId: "req-2" });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toEqual({
+      type: "delete_message",
+      messageId: "msg-2",
+      clientRequestId: "req-2",
+    });
+  });
+
   test("acknowledgeHistory skips empty payloads", () => {
     const { gateway, sent } = createStubbedGateway();
 

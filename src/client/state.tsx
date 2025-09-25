@@ -46,7 +46,25 @@ type OptimisticMessage = {
 type UiState = {
   activeGuildId: Snowflake | null;
   activeChannelId: Snowflake | null;
+  commandError: string | null;
 };
+
+type OptimisticMutation =
+  | {
+      type: "edit";
+      requestId: string;
+      channelId: Snowflake;
+      messageId: Snowflake;
+      previousContent: string;
+      previousUpdatedAt: ISO8601Timestamp;
+    }
+  | {
+      type: "delete";
+      requestId: string;
+      channelId: Snowflake;
+      messageId: Snowflake;
+      snapshot: EnrichedMessage;
+    };
 
 export type ClientState = {
   connection: {
@@ -60,6 +78,7 @@ export type ClientState = {
   membersByGuild: Record<Snowflake, Snowflake[]>;
   messagesByChannel: Record<Snowflake, ChannelLog>;
   optimisticMessages: Record<string, OptimisticMessage>;
+  optimisticMutations: Record<string, OptimisticMutation>;
   ui: UiState;
 };
 
@@ -136,6 +155,73 @@ type OptimisticFailedAction = {
   error: string;
 };
 
+type ReactionOptimisticToggleAction = {
+  type: "channel/reactionOptimisticToggled";
+  payload: {
+    channelId: Snowflake;
+    messageId: Snowflake;
+    emoji: string;
+    userId: Snowflake;
+  };
+};
+
+type ReactionsUpdatedAction = {
+  type: "channel/reactionsUpdated";
+  payload: {
+    channelId: Snowflake;
+    messageId: Snowflake;
+    reactions: Reaction[];
+  };
+};
+
+type MessageEditOptimisticAction = {
+  type: "channel/messageEditOptimistic";
+  payload: {
+    channelId: Snowflake;
+    messageId: Snowflake;
+    nextContent: string;
+    requestId: string;
+    optimisticUpdatedAt: ISO8601Timestamp;
+  };
+};
+
+type MessageDeleteOptimisticAction = {
+  type: "channel/messageDeleteOptimistic";
+  payload: {
+    channelId: Snowflake;
+    messageId: Snowflake;
+    requestId: string;
+  };
+};
+
+type MessageUpdatedAction = {
+  type: "channel/messageUpdated";
+  payload: {
+    message: Message;
+    clientRequestId?: string;
+  };
+};
+
+type MessageDeletedAction = {
+  type: "channel/messageDeleted";
+  payload: {
+    channelId: Snowflake;
+    messageId: Snowflake;
+    clientRequestId?: string;
+  };
+};
+
+type MutationFailedAction = {
+  type: "channel/mutationFailed";
+  requestId: string;
+  error: string;
+};
+
+type UiSetCommandErrorAction = {
+  type: "ui/setCommandError";
+  message: string | null;
+};
+
 type ClientAction =
   | SetConnectionPhaseAction
   | SetSessionAction
@@ -148,7 +234,15 @@ type ClientAction =
   | MessageReceivedAction
   | OptimisticQueuedAction
   | OptimisticResolvedAction
-  | OptimisticFailedAction;
+  | OptimisticFailedAction
+  | ReactionOptimisticToggleAction
+  | ReactionsUpdatedAction
+  | MessageEditOptimisticAction
+  | MessageDeleteOptimisticAction
+  | MessageUpdatedAction
+  | MessageDeletedAction
+  | MutationFailedAction
+  | UiSetCommandErrorAction;
 
 const initialChannelLog = (): ChannelLog => ({
   messages: [],
@@ -199,6 +293,61 @@ const mergeHistory = (previous: ChannelLog, batch: HistoricalMessageBatch): Chan
   };
 };
 
+const updateMessageInLog = (
+  log: ChannelLog,
+  messageId: Snowflake,
+  updater: (message: EnrichedMessage) => EnrichedMessage,
+): ChannelLog => {
+  const index = log.messages.findIndex((message) => message.id === messageId);
+  if (index === -1) {
+    return log;
+  }
+
+  const current = log.messages[index];
+  if (!current) {
+    return log;
+  }
+
+  const nextMessages = [...log.messages];
+  nextMessages[index] = updater(current);
+  return {
+    ...log,
+    messages: nextMessages,
+  };
+};
+
+const toggleReactionForUser = ({
+  reactions,
+  emoji,
+  userId,
+  messageId,
+}: {
+  reactions: Reaction[];
+  emoji: string;
+  userId: Snowflake;
+  messageId: Snowflake;
+}): Reaction[] => {
+  const existingIndex = reactions.findIndex(
+    (reaction) => reaction.emoji === emoji && reaction.authorId === userId,
+  );
+
+  if (existingIndex !== -1) {
+    const next = [...reactions];
+    next.splice(existingIndex, 1);
+    return next;
+  }
+
+  return [
+    ...reactions,
+    {
+      messageId,
+      emoji,
+      authorId: userId,
+      createdAt: new Date().toISOString(),
+    },
+  ];
+};
+
 const firstAvailableTextChannel = (channels: Channel[]): Channel | null => {
   const textChannels = channels.filter((channel) => channel.type === "text");
   if (textChannels.length > 0) {
@@ -218,9 +367,11 @@ export const initialState: ClientState = {
   membersByGuild: {},
   messagesByChannel: {},
   optimisticMessages: {},
+  optimisticMutations: {},
   ui: {
     activeGuildId: null,
     activeChannelId: null,
+    commandError: null,
   },
 };
 
@@ -265,6 +416,7 @@ export const clientReducer = (
         ui: {
           activeGuildId: null,
           activeChannelId: null,
+          commandError: null,
         },
         guilds: {},
         channels: {},
@@ -272,6 +424,7 @@ export const clientReducer = (
         membersByGuild: {},
         messagesByChannel: {},
         optimisticMessages: {},
+        optimisticMutations: {},
       };
     }
     case "guild/bootstrap": {
@@ -340,6 +493,15 @@ export const clientReducer = (
           ...state.ui,
           activeGuildId: nextGuildId,
           activeChannelId: action.channelId,
+        },
+      };
+    }
+    case "ui/setCommandError": {
+      return {
+        ...state,
+        ui: {
+          ...state.ui,
+          commandError: action.message,
         },
       };
     }
@@ -431,6 +593,251 @@ export const clientReducer = (
         },
       };
     }
+    case "channel/messageEditOptimistic": {
+      const log = state.messagesByChannel[action.payload.channelId];
+      if (!log) {
+        return state;
+      }
+
+      const existing = log.messages.find((message) => message.id === action.payload.messageId);
+      if (!existing) {
+        return state;
+      }
+
+      const updatedLog = updateMessageInLog(log, action.payload.messageId, (message) => ({
+        ...message,
+        content: action.payload.nextContent,
+        updatedAt: action.payload.optimisticUpdatedAt,
+      }));
+
+      return {
+        ...state,
+        messagesByChannel: {
+          ...state.messagesByChannel,
+          [action.payload.channelId]: updatedLog,
+        },
+        optimisticMutations: {
+          ...state.optimisticMutations,
+          [action.payload.requestId]: {
+            type: "edit",
+            requestId: action.payload.requestId,
+            channelId: action.payload.channelId,
+            messageId: action.payload.messageId,
+            previousContent: existing.content,
+            previousUpdatedAt: existing.updatedAt,
+          },
+        },
+      };
+    }
+    case "channel/messageDeleteOptimistic": {
+      const log = state.messagesByChannel[action.payload.channelId];
+      if (!log) {
+        return state;
+      }
+
+      const existingIndex = log.messages.findIndex((message) => message.id === action.payload.messageId);
+      if (existingIndex === -1) {
+        return state;
+      }
+
+      const snapshot = log.messages[existingIndex]!;
+      const nextMessages = [...log.messages.slice(0, existingIndex), ...log.messages.slice(existingIndex + 1)];
+
+      return {
+        ...state,
+        messagesByChannel: {
+          ...state.messagesByChannel,
+          [action.payload.channelId]: {
+            ...log,
+            messages: nextMessages,
+          },
+        },
+        optimisticMutations: {
+          ...state.optimisticMutations,
+          [action.payload.requestId]: {
+            type: "delete",
+            requestId: action.payload.requestId,
+            channelId: action.payload.channelId,
+            messageId: action.payload.messageId,
+            snapshot,
+          },
+        },
+      };
+    }
+    case "channel/messageUpdated": {
+      const { message, clientRequestId } = action.payload;
+      const log = state.messagesByChannel[message.channelId];
+      if (!log) {
+        return state;
+      }
+
+      const updatedLog = updateMessageInLog(log, message.id, (current) => ({
+        ...current,
+        content: message.content,
+        updatedAt: message.updatedAt,
+      }));
+
+      const nextMutations = { ...state.optimisticMutations };
+      if (clientRequestId && nextMutations[clientRequestId]) {
+        delete nextMutations[clientRequestId];
+      } else {
+        for (const [id, mutation] of Object.entries(nextMutations)) {
+          if (mutation.type === "edit" && mutation.messageId === message.id) {
+            delete nextMutations[id];
+          }
+        }
+      }
+
+      return {
+        ...state,
+        messagesByChannel: {
+          ...state.messagesByChannel,
+          [message.channelId]: updatedLog,
+        },
+        optimisticMutations: nextMutations,
+        ui: {
+          ...state.ui,
+          commandError: null,
+        },
+      };
+    }
+    case "channel/messageDeleted": {
+      const { channelId, messageId, clientRequestId } = action.payload;
+      const log = state.messagesByChannel[channelId];
+      if (!log) {
+        return state;
+      }
+
+      const nextMessages = log.messages.filter((message) => message.id !== messageId);
+      const nextMutations = { ...state.optimisticMutations };
+      if (clientRequestId && nextMutations[clientRequestId]) {
+        delete nextMutations[clientRequestId];
+      } else {
+        for (const [id, mutation] of Object.entries(nextMutations)) {
+          if (mutation.type === "delete" && mutation.messageId === messageId) {
+            delete nextMutations[id];
+          }
+        }
+      }
+
+      return {
+        ...state,
+        messagesByChannel: {
+          ...state.messagesByChannel,
+          [channelId]: {
+            ...log,
+            messages: nextMessages,
+          },
+        },
+        optimisticMutations: nextMutations,
+        ui: {
+          ...state.ui,
+          commandError: null,
+        },
+      };
+    }
+    case "channel/mutationFailed": {
+      const mutation = state.optimisticMutations[action.requestId];
+      const nextMutations = { ...state.optimisticMutations };
+      if (mutation) {
+        delete nextMutations[action.requestId];
+      }
+
+      if (!mutation) {
+        return {
+          ...state,
+          optimisticMutations: nextMutations,
+          ui: {
+            ...state.ui,
+            commandError: action.error,
+          },
+        };
+      }
+
+      if (mutation.type === "edit") {
+        const log = state.messagesByChannel[mutation.channelId];
+        if (!log) {
+          return {
+            ...state,
+            optimisticMutations: nextMutations,
+            ui: {
+              ...state.ui,
+              commandError: action.error,
+            },
+          };
+        }
+
+        const restoredLog = updateMessageInLog(log, mutation.messageId, (message) => ({
+          ...message,
+          content: mutation.previousContent,
+          updatedAt: mutation.previousUpdatedAt,
+        }));
+
+        return {
+          ...state,
+          messagesByChannel: {
+            ...state.messagesByChannel,
+            [mutation.channelId]: restoredLog,
+          },
+          optimisticMutations: nextMutations,
+          ui: {
+            ...state.ui,
+            commandError: action.error,
+          },
+        };
+      }
+
+      const log = state.messagesByChannel[mutation.channelId];
+      const restoredLog = log ? upsertMessage(log, mutation.snapshot) : initialChannelLog();
+
+      return {
+        ...state,
+        messagesByChannel: {
+          ...state.messagesByChannel,
+          [mutation.channelId]: restoredLog,
+        },
+        optimisticMutations: nextMutations,
+        ui: {
+          ...state.ui,
+          commandError: action.error,
+        },
+      };
+    }
+    case "channel/reactionOptimisticToggled": {
+      const log = state.messagesByChannel[action.payload.channelId] ?? initialChannelLog();
+      const updatedLog = updateMessageInLog(log, action.payload.messageId, (message) => ({
+        ...message,
+        reactions: toggleReactionForUser({
+          reactions: message.reactions,
+          emoji: action.payload.emoji,
+          userId: action.payload.userId,
+          messageId: message.id,
+        }),
+      }));
+
+      return {
+        ...state,
+        messagesByChannel: {
+          ...state.messagesByChannel,
+          [action.payload.channelId]: updatedLog,
+        },
+      };
+    }
+    case "channel/reactionsUpdated": {
+      const log = state.messagesByChannel[action.payload.channelId] ?? initialChannelLog();
+      const updatedLog = updateMessageInLog(log, action.payload.messageId, (message) => ({
+        ...message,
+        reactions: action.payload.reactions,
+      }));
+
+      return {
+        ...state,
+        messagesByChannel: {
+          ...state.messagesByChannel,
+          [action.payload.channelId]: updatedLog,
+        },
+      };
+    }
     default:
       return state;
   }
@@ -494,10 +901,57 @@ export const reduceGatewayEvent = (
         },
       } satisfies MessageReceivedAction;
     }
+    case "reactions_updated": {
+      return {
+        type: "channel/reactionsUpdated",
+        payload: {
+          channelId: event.channelId,
+          messageId: event.messageId,
+          reactions: event.reactions,
+        },
+      } satisfies ReactionsUpdatedAction;
+    }
+    case "message_updated": {
+      return {
+        type: "channel/messageUpdated",
+        payload: {
+          message: event.message,
+          clientRequestId: event.clientRequestId,
+        },
+      } satisfies MessageUpdatedAction;
+    }
+    case "message_deleted": {
+      return {
+        type: "channel/messageDeleted",
+        payload: {
+          channelId: event.channelId,
+          messageId: event.messageId,
+          clientRequestId: event.clientRequestId,
+        },
+      } satisfies MessageDeletedAction;
+    }
     case "command_error": {
       if (!event.clientId) {
-        return null;
+        return {
+          type: "ui/setCommandError",
+          message: event.error,
+        } satisfies UiSetCommandErrorAction;
       }
+
+      if (event.command === "edit" || event.command === "delete") {
+        return [
+          {
+            type: "channel/mutationFailed",
+            requestId: event.clientId,
+            error: event.error,
+          } satisfies MutationFailedAction,
+          {
+            type: "ui/setCommandError",
+            message: event.error,
+          } satisfies UiSetCommandErrorAction,
+        ];
+      }
+
       return {
         type: "channel/optimisticFailed",
         clientId: event.clientId,

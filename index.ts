@@ -6,9 +6,13 @@ import {
   createGuestSession,
   fetchChannelHistory,
   getChannelById,
+  getMessageById,
   getSessionByToken,
   getUserById,
   listGuildBootstrap,
+  updateMessageContent,
+  deleteMessageById,
+  toggleReaction,
   userHasAccessToGuild,
   type Session,
 } from "./src/server/repository";
@@ -43,7 +47,11 @@ const guestRequestSchema = z
 
 const clientEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("auth_init"), token: z.string().nullable() }),
-  z.object({ type: z.literal("join_channel"), channelId: z.string(), limit: z.number().min(1).max(100).optional() }),
+  z.object({
+    type: z.literal("join_channel"),
+    channelId: z.string(),
+    limit: z.number().min(1).max(100).optional(),
+  }),
   z.object({ type: z.literal("leave_channel"), channelId: z.string() }),
   z.object({
     type: z.literal("send_message"),
@@ -52,8 +60,24 @@ const clientEventSchema = z.discriminatedUnion("type", [
     replyToId: z.string().nullable().optional(),
     clientId: z.string().optional(),
   }),
+  z.object({ type: z.literal("toggle_reaction"), messageId: z.string(), emoji: z.string().min(1).max(64) }),
+  z.object({
+    type: z.literal("edit_message"),
+    messageId: z.string(),
+    content: z.string().min(1),
+    clientRequestId: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("delete_message"),
+    messageId: z.string(),
+    clientRequestId: z.string().optional(),
+  }),
   z.object({ type: z.literal("emit_command"), command: z.any() }),
-  z.object({ type: z.literal("ack_history"), channelId: z.string(), messageIds: z.array(z.string()) }),
+  z.object({
+    type: z.literal("ack_history"),
+    channelId: z.string(),
+    messageIds: z.array(z.string()),
+  }),
 ]);
 
 type ClientEvent = z.infer<typeof clientEventSchema>;
@@ -86,9 +110,16 @@ const parseClientEvent = (payload: string): ClientEvent | null => {
   try {
     const json = JSON.parse(payload) as GatewayClientEvent;
     const result = clientEventSchema.safeParse(json);
-    return result.success ? result.data : null;
+    if (!result.success) {
+      console.warn("Rejected client payload", {
+        payload,
+        issues: result.error.issues,
+      });
+      return null;
+    }
+    return result.data;
   } catch (error) {
-    console.error("Failed to parse client payload", error);
+    console.error("Failed to parse client payload", error, { payload });
     return null;
   }
 };
@@ -96,7 +127,8 @@ const parseClientEvent = (payload: string): ClientEvent | null => {
 const serializeEvent = (event: GatewayServerEvent): string =>
   JSON.stringify(event);
 
-const channelTopic = (channelId: Snowflake): string => `${CHANNEL_TOPIC_PREFIX}:${channelId}`;
+const channelTopic = (channelId: Snowflake): string =>
+  `${CHANNEL_TOPIC_PREFIX}:${channelId}`;
 
 const server = Bun.serve({
   port: 3000,
@@ -108,7 +140,9 @@ const server = Bun.serve({
       const parsed = guestRequestSchema.safeParse(body);
 
       if (!parsed.success) {
-        return toJsonResponse(400, { error: parsed.error.issues.map((issue) => issue.message).join(", ") });
+        return toJsonResponse(400, {
+          error: parsed.error.issues.map((issue) => issue.message).join(", "),
+        });
       }
 
       const { user, session } = createGuestSession(parsed.data?.displayName);
@@ -137,7 +171,9 @@ const server = Bun.serve({
       }
 
       if (!userHasAccessToGuild(session.userId, channel.guildId)) {
-        return toJsonResponse(403, { error: "You do not have access to this channel" });
+        return toJsonResponse(403, {
+          error: "You do not have access to this channel",
+        });
       }
 
       const queryValues = Object.fromEntries(url.searchParams.entries());
@@ -226,7 +262,7 @@ const server = Bun.serve({
             type: "command_error",
             command: "history",
             error: "Malformed client event",
-          }),
+          })
         );
         return;
       }
@@ -238,7 +274,7 @@ const server = Bun.serve({
               type: "connection_ack",
               sessionId: ws.data.session.id,
               user: ws.data.user,
-            }),
+            })
           );
           break;
         }
@@ -250,7 +286,7 @@ const server = Bun.serve({
                 type: "command_error",
                 command: "join",
                 error: "Channel not found",
-              }),
+              })
             );
             return;
           }
@@ -261,7 +297,7 @@ const server = Bun.serve({
                 type: "command_error",
                 command: "join",
                 error: "You cannot join this channel",
-              }),
+              })
             );
             return;
           }
@@ -281,7 +317,7 @@ const server = Bun.serve({
             serializeEvent({
               type: "history_batch",
               batch: history,
-            }),
+            })
           );
           break;
         }
@@ -302,7 +338,7 @@ const server = Bun.serve({
                 command: "history",
                 error: "Channel not found",
                 clientId: event.clientId ?? undefined,
-              }),
+              })
             );
             return;
           }
@@ -314,7 +350,7 @@ const server = Bun.serve({
                 command: "history",
                 error: "Join the channel before sending messages",
                 clientId: event.clientId ?? undefined,
-              }),
+              })
             );
             return;
           }
@@ -338,13 +374,233 @@ const server = Bun.serve({
           server.publish(channelTopic(channel.id), serializeEvent(payload));
           break;
         }
+        case "toggle_reaction": {
+          const messageRecord = getMessageById(event.messageId);
+          if (!messageRecord) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "react",
+                error: "Message not found",
+              })
+            );
+            return;
+          }
+
+          if (!userHasAccessToGuild(ws.data.user.id, messageRecord.guildId)) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "react",
+                error: "You cannot react to this message",
+              })
+            );
+            return;
+          }
+
+          if (!ws.data.joinedChannels.has(messageRecord.channelId)) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "react",
+                error: "Join the channel before reacting",
+              })
+            );
+            return;
+          }
+
+          const result = toggleReaction({
+            messageId: messageRecord.id,
+            emoji: event.emoji,
+            userId: ws.data.user.id,
+          });
+
+          const payload: GatewayServerEvent = {
+            type: "reactions_updated",
+            messageId: messageRecord.id,
+            channelId: messageRecord.channelId,
+            reactions: result.reactions,
+          };
+
+          server.publish(channelTopic(messageRecord.channelId), serializeEvent(payload));
+          break;
+        }
+        case "edit_message": {
+          const messageRecord = getMessageById(event.messageId);
+          if (!messageRecord) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "edit",
+                error: "Message not found",
+                clientId: event.clientRequestId ?? undefined,
+              })
+            );
+            return;
+          }
+
+          if (!userHasAccessToGuild(ws.data.user.id, messageRecord.guildId)) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "edit",
+                error: "You cannot edit messages in this guild",
+                clientId: event.clientRequestId ?? undefined,
+              })
+            );
+            return;
+          }
+
+          if (!ws.data.joinedChannels.has(messageRecord.channelId)) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "edit",
+                error: "Join the channel before editing",
+                clientId: event.clientRequestId ?? undefined,
+              })
+            );
+            return;
+          }
+
+          if (messageRecord.authorId !== ws.data.user.id) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "edit",
+                error: "You can only edit your own messages",
+                clientId: event.clientRequestId ?? undefined,
+              })
+            );
+            return;
+          }
+
+          const trimmed = event.content.trim();
+          if (trimmed.length === 0) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "edit",
+                error: "Edited message cannot be empty",
+                clientId: event.clientRequestId ?? undefined,
+              })
+            );
+            return;
+          }
+
+          const updated = updateMessageContent({
+            messageId: event.messageId,
+            authorId: ws.data.user.id,
+            content: trimmed,
+          });
+
+          if (!updated) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "edit",
+                error: "Unable to edit the message",
+                clientId: event.clientRequestId ?? undefined,
+              })
+            );
+            return;
+          }
+
+          server.publish(
+            channelTopic(updated.channelId),
+            serializeEvent({
+              type: "message_updated",
+              message: updated,
+              clientRequestId: event.clientRequestId ?? undefined,
+            }),
+          );
+          break;
+        }
+        case "delete_message": {
+          const messageRecord = getMessageById(event.messageId);
+          if (!messageRecord) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "delete",
+                error: "Message not found",
+                clientId: event.clientRequestId ?? undefined,
+              })
+            );
+            return;
+          }
+
+          if (!userHasAccessToGuild(ws.data.user.id, messageRecord.guildId)) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "delete",
+                error: "You cannot delete messages in this guild",
+                clientId: event.clientRequestId ?? undefined,
+              })
+            );
+            return;
+          }
+
+          if (!ws.data.joinedChannels.has(messageRecord.channelId)) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "delete",
+                error: "Join the channel before deleting",
+                clientId: event.clientRequestId ?? undefined,
+              })
+            );
+            return;
+          }
+
+          if (messageRecord.authorId !== ws.data.user.id) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "delete",
+                error: "You can only delete your own messages",
+                clientId: event.clientRequestId ?? undefined,
+              })
+            );
+            return;
+          }
+
+          const removed = deleteMessageById({
+            messageId: event.messageId,
+            authorId: ws.data.user.id,
+          });
+
+          if (!removed) {
+            ws.send(
+              serializeEvent({
+                type: "command_error",
+                command: "delete",
+                error: "Unable to delete the message",
+                clientId: event.clientRequestId ?? undefined,
+              })
+            );
+            return;
+          }
+
+          server.publish(
+            channelTopic(removed.channelId),
+            serializeEvent({
+              type: "message_deleted",
+              channelId: removed.channelId,
+              messageId: removed.id,
+              clientRequestId: event.clientRequestId ?? undefined,
+            }),
+          );
+          break;
+        }
         case "emit_command": {
           ws.send(
             serializeEvent({
               type: "command_error",
               command: "help",
               error: "Command routing not implemented yet",
-            }),
+            })
           );
           break;
         }

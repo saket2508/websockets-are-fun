@@ -87,6 +87,127 @@ describe("repository", () => {
     expect(stored?.content).toBe("Writing tests is fun");
   });
 
+  test("updateMessageContent returns updated message for the author", () => {
+    const channelRow = database.db
+      .query("SELECT id, guild_id FROM channels ORDER BY position LIMIT 1")
+      .get() as { id: string; guild_id: string } | undefined;
+
+    expect(channelRow).toBeDefined();
+    if (!channelRow) {
+      return;
+    }
+
+    const guest = repository.createGuestSession("Editor");
+    const original = repository.appendMessage({
+      guildId: channelRow.guild_id,
+      channelId: channelRow.id,
+      authorId: guest.user.id,
+      content: "Original content",
+    });
+
+    const updated = repository.updateMessageContent({
+      messageId: original.id,
+      authorId: guest.user.id,
+      content: "Updated content",
+    });
+
+    expect(updated).not.toBeNull();
+    expect(updated?.content).toBe("Updated content");
+
+    const stored = database.db
+      .query("SELECT content FROM messages WHERE id = ?")
+      .get(original.id) as { content: string } | undefined;
+
+    expect(stored?.content).toBe("Updated content");
+
+    const otherUser = repository.createGuestSession("Intruder");
+    const forbidden = repository.updateMessageContent({
+      messageId: original.id,
+      authorId: otherUser.user.id,
+      content: "Hacked",
+    });
+
+    expect(forbidden).toBeNull();
+  });
+
+  test("deleteMessageById removes message for the author", () => {
+    const channelRow = database.db
+      .query("SELECT id, guild_id FROM channels ORDER BY position LIMIT 1")
+      .get() as { id: string; guild_id: string } | undefined;
+
+    expect(channelRow).toBeDefined();
+    if (!channelRow) {
+      return;
+    }
+
+    const guest = repository.createGuestSession("Destroyer");
+    const message = repository.appendMessage({
+      guildId: channelRow.guild_id,
+      channelId: channelRow.id,
+      authorId: guest.user.id,
+      content: "Please delete me",
+    });
+
+    const removed = repository.deleteMessageById({
+      messageId: message.id,
+      authorId: guest.user.id,
+    });
+
+    expect(removed).not.toBeNull();
+    expect(removed?.id).toBe(message.id);
+
+    const stillThere = database.db
+      .query("SELECT 1 FROM messages WHERE id = ?")
+      .get(message.id) as { 1: number } | undefined | null;
+
+    expect(stillThere).toBeNull();
+
+    const otherUser = repository.createGuestSession("Snooper");
+    const forbidden = repository.deleteMessageById({
+      messageId: message.id,
+      authorId: otherUser.user.id,
+    });
+
+    expect(forbidden).toBeNull();
+  });
+
+  test("toggleReaction adds and removes reactions", () => {
+    const channelRow = database.db
+      .query("SELECT id, guild_id FROM channels ORDER BY position LIMIT 1")
+      .get() as { id: string; guild_id: string } | undefined;
+
+    expect(channelRow).toBeDefined();
+    if (!channelRow) {
+      return;
+    }
+
+    const guest = repository.createGuestSession("Reactor");
+    const message = repository.appendMessage({
+      guildId: channelRow.guild_id,
+      channelId: channelRow.id,
+      authorId: guest.user.id,
+      content: "React to me",
+    });
+
+    const firstToggle = repository.toggleReaction({
+      messageId: message.id,
+      emoji: ":thumbsup:",
+      userId: guest.user.id,
+    });
+
+    expect(firstToggle.added).toBe(true);
+    expect(firstToggle.reactions).toHaveLength(1);
+
+    const secondToggle = repository.toggleReaction({
+      messageId: message.id,
+      emoji: ":thumbsup:",
+      userId: guest.user.id,
+    });
+
+    expect(secondToggle.added).toBe(false);
+    expect(secondToggle.reactions).toHaveLength(0);
+  });
+
   test("listGuildBootstrap returns guild bundles for a user", () => {
     const guest = repository.createGuestSession("Bootstrapper");
 

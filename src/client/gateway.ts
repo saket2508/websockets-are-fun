@@ -79,6 +79,31 @@ export class GatewayClient {
     });
   }
 
+  toggleReaction(messageId: Snowflake, emoji: string) {
+    this.send({
+      type: "toggle_reaction",
+      messageId,
+      emoji,
+    });
+  }
+
+  editMessage(input: { messageId: Snowflake; content: string; clientRequestId?: string }) {
+    this.send({
+      type: "edit_message",
+      messageId: input.messageId,
+      content: input.content,
+      clientRequestId: input.clientRequestId,
+    });
+  }
+
+  deleteMessage(input: { messageId: Snowflake; clientRequestId?: string }) {
+    this.send({
+      type: "delete_message",
+      messageId: input.messageId,
+      clientRequestId: input.clientRequestId,
+    });
+  }
+
   acknowledgeHistory(channelId: Snowflake, messageIds: Snowflake[]) {
     if (messageIds.length === 0) {
       return;

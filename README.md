@@ -1,111 +1,81 @@
-# Bun WebSocket Chat App
+# Discord-Style Terminal Chat (Bun + Ink)
 
-A real-time terminal chat application built with Bun's WebSocket server and a Node.js client.
+A Discord-inspired real-time chat experience that runs entirely in the terminal. The Bun WebSocket server streams gateway events from a SQLite data model, while an Ink-powered client renders guild/channel panes, live message feeds, and rich composer tooling.
 
-## Features
+## Feature Highlights
+- 🖥️ **Discord-style layout** – guild rail, channel list, member list, and a scrollable message pane with focus cycling.
+- ⚡ **Bun WebSocket gateway** – typed events for connection ACKs, guild bootstrap, history batches, message creates, and reaction updates.
+- 💾 **SQLite-backed data** – migrations and seed scripts provide guilds, channels, users, and starter conversation history.
+- ✍️ **Optimistic messaging** – messages appear instantly while awaiting server ACKs, then reconcile against canonical payloads.
+- 📝 **Markdown & emoji rendering** – headings, lists, inline/code blocks, and multi-codepoint emoji render correctly within the TUI.
+- 😀 **Reactions & quick help** – `/react <emoji> [messageId]` toggles reactions with optimistic state; `CTRL+P` opens a quick command overlay.
+- ✂️ **Inline edits & deletes** – `/edit [messageId] <text>` and `/delete [messageId]` apply optimistic updates that reconcile with server confirmations.
+- ✅ **Typed contracts & tests** – shared DTOs, repository logic, gateway reducer, and markdown renderer all ship with `bun:test` coverage.
 
-- 🚀 **High-performance**: Built with Bun's native WebSocket implementation (7x faster than Node.js + ws)
-- 💬 **Real-time messaging**: Instant message delivery with pub/sub system
-- 🎨 **Rich terminal UI**: Colored output with emoji support
-- 🖥️ **Terminal client**: Interactive command-line interface
-- 📝 **Commands**: `/help`, `/quit`, `/clear` for enhanced UX
-- 🔄 **Auto-reconnection**: Graceful handling of connection issues
+## Getting Started
+1. Install dependencies:
+   ```bash
+   bun install
+   ```
+2. Prepare the database (idempotent):
+   ```bash
+   bun run src/server/database.ts --migrate
+   bun run scripts/seed.ts
+   ```
+3. Start the WebSocket/API server:
+   ```bash
+   bun run index.ts
+   ```
+4. In a new terminal, launch the Ink client:
+   ```bash
+   bun run client.tsx
+   ```
+   Each client window negotiates a guest session and will join the seeded guilds/channels automatically.
+5. (Optional) Enable hot reload while working on the server:
+   ```bash
+   bun --hot run index.ts
+   ```
 
-## Quick Start
-
-### Prerequisites
-- [Bun](https://bun.sh) installed on your system
-
-### Installation
-```bash
-# Install dependencies
-bun install
-```
-
-### Running the Application
-
-#### Option 1: Run Server and Client Together
-```bash
-# Terminal 1: Start the server
-bun run server
-
-# Terminal 2: Connect with client
-bun run client
-```
-
-#### Option 2: Development Mode (with hot reload)
-```bash
-# Start server with hot reload
-bun run dev
-```
-
-### Testing with Multiple Clients
-Open multiple terminals and run `bun run client` in each to test the chat functionality.
+## Working in the Terminal Client
+- `TAB` / `SHIFT+TAB` cycle focus across guilds → channels → messages → members → composer.
+- `↑`/`↓` scroll message history; `ENTER` focuses the composer and sends messages.
+- `CTRL+P` toggles the quick command overlay; `CTRL+C` exits the client.
+- `/react <emoji> [messageId]` toggles a reaction (defaults to the selected/latest message when omitted).
+- Press `E` in the message pane (or run `/edit`) to prefill the composer with your selected message, then ENTER saves; press `X` or `/delete` to remove your own message.
+- New composer input is emoji-safe, so paste or type complex emoji without breaking layout.
 
 ## Architecture
+### Server (`index.ts`, `src/server/*`)
+- Uses `Bun.serve()` to expose HTTP endpoints (guest auth, history) and a WebSocket gateway.
+- Repository layer (`src/server/repository.ts`) encapsulates session auth, channel access, history queries, message insertion, and reaction toggling.
+- SQLite schema and migrations live in `src/server/database.ts`; seed data is generated via `scripts/seed.ts`.
+- Row-to-DTO mapping and shared contracts ensure the gateway emits strongly typed payloads consumed by the client.
 
-### Server (`index.ts`)
-- **Bun.serve()**: High-performance HTTP/WebSocket server
-- **Pub/Sub System**: Topic-based message broadcasting
-- **Random Usernames**: Auto-generated fun usernames for each connection
-- **Type Safety**: Full TypeScript support with custom WebSocket data types
+### Client (`client.tsx`, `src/client/*`)
+- Ink components render the Discord-style layout: `GuildRail`, `ChannelList`, `MessagePane`, `MemberList`, and `Composer`.
+- Centralised reducer/state context (`src/client/state.tsx`) manages session info, guild/channel selection, optimistic messages, and reaction state.
+- `src/client/gateway.ts` manages the WebSocket lifecycle, dispatching typed gateway events into the reducer.
+- `src/client/markdown.ts` provides a lightweight renderer tuned for terminal width handling.
 
-### Client (`client.ts`)
-- **WebSocket Connection**: Connects to `ws://localhost:3000`
-- **Interactive UI**: readline-based prompt system
-- **Command System**: Slash commands for enhanced functionality
-- **Rich Formatting**: Colored output with chalk
-- **Graceful Shutdown**: Proper cleanup on exit
+### Shared Contracts (`src/shared/types.ts`)
+- DTOs model users, guilds, channels, messages, reactions, and gateway events, keeping the server, client, and tests aligned.
 
-## Available Commands
+## Tooling & Tests
+- Run the full test suite with `bun test` (covers repositories, gateway reducer, markdown renderer, and optimistic flows).
+- Type-check the project via `bun run typecheck`.
+- Additional scripts: `bun run scripts/seed.ts` (reset demo content) and `bun run src/server/database.ts --migrate` (apply schema changes).
 
-- `/help` - Show available commands
-- `/quit` or `/exit` - Exit the chat
-- `/clear` - Clear the terminal screen
+## Documentation
+- Sprint notes: `docs/sprint-1.md`, `docs/sprint-2.md`, `docs/sprint-3.md`
+- High-level plan: `docs/sprint-plan.md`
 
-## How It Works
-
-1. **Server Startup**: `Bun.serve()` starts on port 3000
-2. **Client Connection**: WebSocket upgrade from HTTP to WS protocol
-3. **User Registration**: Server assigns random username to each connection
-4. **Message Flow**: Client → Server → Broadcast to all subscribers
-5. **Pub/Sub**: Uses Bun's native publish-subscribe for efficient message distribution
-
-## Development
-
-### Type Checking
-```bash
-bun run typecheck
-```
-
-### Project Structure
-```
-bun-chat-app/
-├── index.ts          # WebSocket server
-├── client.ts         # Terminal client
-├── package.json      # Dependencies and scripts
-├── tsconfig.json     # TypeScript configuration
-└── README.md         # This file
-```
-
-## Performance
-
-- **7x faster** than Node.js + ws library
-- **Native WebSocket implementation** in Bun
-- **Optimized pub/sub system** for high concurrency
-- **Memory efficient** with single handler per server
-
-## Next Steps
-
-Consider adding these features:
-- User authentication and persistent usernames
-- Private messaging between users
-- Message history with SQLite database
-- File sharing capabilities
-- Multiple chat rooms/channels
-- Voice message support
-- Mobile app companion
+## Roadmap & Enhancements
+Plans from the sprint backlog highlight the next features to tackle:
+- Message edit/delete workflows with optimistic reconciliation.
+- Full slash-command routing (`/nick`, `/join`, `/leave`, `/thread`, `/dm`, `/help`) and error feedback.
+- Presence badges, typing indicators, and reconnection toasts to surface live status.
+- Expanded testing (Ink component coverage, command handlers) and documentation polish.
+- Longer-term ideas: persistent user accounts, attachments, packaging the client, telemetry/metrics, and extensibility hooks.
 
 ---
-
-Built with ❤️ using [Bun](https://bun.sh) - the fast JavaScript runtime.
+Built with ❤️ on Bun, Ink, and TypeScript.

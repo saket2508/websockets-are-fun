@@ -102,4 +102,177 @@ describe("client state reducer", () => {
       "Join the channel before sending messages",
     );
   });
+
+  test("reactionOptimisticToggled updates reaction list", () => {
+    const startingState = cloneState();
+    const message = createMessage();
+    startingState.messagesByChannel = {
+      "channel-1": {
+        messages: [{ ...message, author: baseUser, reactions: [] }],
+        fetchedAt: null,
+        hasLoadedInitial: true,
+      },
+    };
+
+    const nextState = clientReducer(startingState, {
+      type: "channel/reactionOptimisticToggled",
+      payload: {
+        channelId: "channel-1",
+        messageId: message.id,
+        emoji: ":thumbsup:",
+        userId: baseUser.id,
+      },
+    });
+
+    const reactions =
+      nextState.messagesByChannel["channel-1"]?.messages[0]?.reactions ?? [];
+    expect(reactions.some((reaction) => reaction.emoji === ":thumbsup:" && reaction.authorId === baseUser.id)).toBe(true);
+  });
+
+  test("reactions_updated replaces reaction list", () => {
+    const startingState = cloneState();
+    const message = createMessage();
+    startingState.messagesByChannel = {
+      "channel-1": {
+        messages: [{ ...message, author: baseUser, reactions: [] }],
+        fetchedAt: null,
+        hasLoadedInitial: true,
+      },
+    };
+
+    const serverEvent: GatewayServerEvent = {
+      type: "reactions_updated",
+      channelId: "channel-1",
+      messageId: message.id,
+      reactions: [
+        {
+          messageId: message.id,
+          emoji: ":heart:",
+          authorId: baseUser.id,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    };
+
+    const action = reduceGatewayEvent(serverEvent) as ClientAction;
+    const nextState = clientReducer(startingState, action);
+
+    const reactions =
+      nextState.messagesByChannel["channel-1"]?.messages[0]?.reactions ?? [];
+    expect(reactions).toHaveLength(1);
+    expect(reactions[0]?.emoji).toBe(":heart:");
+  });
+
+  test("messageEditOptimistic updates content and tracks mutation", () => {
+    const startingState = cloneState();
+    const message = createMessage();
+    const enriched = { ...message, author: baseUser, reactions: [] };
+    startingState.messagesByChannel = {
+      "channel-1": {
+        messages: [enriched],
+        fetchedAt: null,
+        hasLoadedInitial: true,
+      },
+    };
+
+    const nextState = clientReducer(startingState, {
+      type: "channel/messageEditOptimistic",
+      payload: {
+        channelId: "channel-1",
+        messageId: message.id,
+        nextContent: "Edited",
+        requestId: "req-1",
+        optimisticUpdatedAt: new Date().toISOString(),
+      },
+    });
+
+    const edited = nextState.messagesByChannel["channel-1"]?.messages[0];
+    expect(edited?.content).toBe("Edited");
+    expect(nextState.optimisticMutations["req-1"]).toBeDefined();
+  });
+
+  test("messageUpdated clears optimistic mutation", () => {
+    const startingState = cloneState();
+    const message = createMessage();
+    const enriched = { ...message, author: baseUser, reactions: [] };
+    startingState.messagesByChannel = {
+      "channel-1": {
+        messages: [enriched],
+        fetchedAt: null,
+        hasLoadedInitial: true,
+      },
+    };
+    startingState.optimisticMutations = {
+      "req-2": {
+        type: "edit",
+        requestId: "req-2",
+        channelId: "channel-1",
+        messageId: message.id,
+        previousContent: "Hello world",
+        previousUpdatedAt: message.updatedAt,
+      },
+    };
+
+    const nextState = clientReducer(startingState, {
+      type: "channel/messageUpdated",
+      payload: {
+        message: { ...message, content: "Server" },
+        clientRequestId: "req-2",
+      },
+    });
+
+    const edited = nextState.messagesByChannel["channel-1"]?.messages[0];
+    expect(edited?.content).toBe("Server");
+    expect(nextState.optimisticMutations["req-2"]).toBeUndefined();
+  });
+
+  test("mutationFailed reverts edit and surfaces error", () => {
+    const startingState = cloneState();
+    const message = createMessage();
+    const enriched = { ...message, author: baseUser, reactions: [] };
+    startingState.messagesByChannel = {
+      "channel-1": {
+        messages: [enriched],
+        fetchedAt: null,
+        hasLoadedInitial: true,
+      },
+    };
+    startingState.optimisticMutations = {
+      "req-3": {
+        type: "edit",
+        requestId: "req-3",
+        channelId: "channel-1",
+        messageId: message.id,
+        previousContent: "Hello world",
+        previousUpdatedAt: message.updatedAt,
+      },
+    };
+
+    const nextState = clientReducer(startingState, {
+      type: "channel/mutationFailed",
+      requestId: "req-3",
+      error: "Only authors can edit",
+    });
+
+    const restored = nextState.messagesByChannel["channel-1"]?.messages[0];
+    expect(restored?.content).toBe("Hello world");
+    expect(nextState.ui.commandError).toBe("Only authors can edit");
+  });
+
+  test("reduceGatewayEvent returns mutation failure actions for edit errors", () => {
+    const event: GatewayServerEvent = {
+      type: "command_error",
+      command: "edit",
+      error: "You can only edit your own messages",
+      clientId: "req-4",
+    };
+
+    const actions = reduceGatewayEvent(event);
+    expect(Array.isArray(actions)).toBe(true);
+    if (Array.isArray(actions)) {
+      const [mutationAction, uiAction] = actions;
+      expect(mutationAction.type).toBe("channel/mutationFailed");
+      expect(uiAction.type).toBe("ui/setCommandError");
+    }
+  });
 });
