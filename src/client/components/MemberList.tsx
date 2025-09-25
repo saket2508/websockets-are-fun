@@ -10,6 +10,16 @@ type MemberListProps = {
   focus: boolean;
 };
 
+const palette = theme.palette.members;
+
+const colourIndexFor = (seed: string) => {
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash + seed.charCodeAt(index)) % palette.length;
+  }
+  return hash;
+};
+
 const displayNameForMember = (member: Member) => {
   if (member.nickname) {
     return member.nickname;
@@ -31,9 +41,10 @@ export function MemberList({ members, memberIds, focus }: MemberListProps) {
             return null;
           }
 
+          const colour = palette[colourIndexFor(member.userId)];
           return (
-            <Text key={memberId}>
-              {member.muted ? "🔇" : " "} {displayNameForMember(member)}
+            <Text key={memberId} color={colour}>
+              {member.muted ? "🔇" : "🟢"} {displayNameForMember(member)}
             </Text>
           );
         })

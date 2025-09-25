@@ -95,18 +95,37 @@ export function MessagePane({
             const isSelected = selectedMessageId === message.id;
             const name = kleur.bold(message.author.displayName ?? message.author.username);
             const prefix = isSelected ? kleur.cyan("➤") : " ";
+            const edited = message.createdAt !== message.updatedAt;
+            const editedBadge = edited ? kleur.gray(" (edited)") : "";
+            const authorColour = isSelected ? kleur.cyan : (text: string) => text;
+            const timeColour = isSelected ? kleur.white : kleur.gray;
+            const lineBackground = isSelected ? theme.palette.selection : undefined;
             return (
               <Box key={message.id} flexDirection="column">
-                <Text>
-                  {prefix} {kleur.gray(`[${formatTime(message.createdAt)}]`)} {name}: {first ?? ""}
+                <Text backgroundColor={lineBackground} color={isSelected ? "white" : undefined}>
+                  {prefix} {timeColour(`[${formatTime(message.createdAt)}]`)} {authorColour(name)}: {first ?? ""}
+                  {editedBadge}
                 </Text>
                 {rest.map((line, index) => (
-                  <Text key={`${message.id}-line-${index}`} color="gray">
+                  <Text
+                    key={`${message.id}-line-${index}`}
+                    color={isSelected ? "white" : "gray"}
+                    backgroundColor={lineBackground}
+                  >
                     {line ? `   ${line}` : ""}
                   </Text>
                 ))}
                 {reactionSummary ? (
-                  <Text color={theme.text.accent}>{`   ${reactionSummary}`}</Text>
+                  <Text color={isSelected ? "yellow" : theme.text.accent} backgroundColor={lineBackground}>
+                    {`   ${reactionSummary}`}
+                  </Text>
+                ) : null}
+                {isSelected ? (
+                  <Text color="white" backgroundColor={theme.palette.shortcutHint}>
+                    {`   Shortcuts: `}
+                    {currentUserId === message.author.id ? "E edit · X delete · " : ""}
+                    {"/react <emoji> add reaction"}
+                  </Text>
                 ) : null}
               </Box>
             );

@@ -20,6 +20,18 @@ const channelLabel = (channel: Channel): string => {
   return `# ${channel.name}`;
 };
 
+const colourForChannel = (channel: Channel) => {
+  const { channels } = theme.palette;
+  switch (channel.type) {
+    case "voice":
+      return channels.voice;
+    case "thread":
+      return channels.thread;
+    default:
+      return channels.text;
+  }
+};
+
 export function ChannelList({ channels, activeChannelId, focus }: ChannelListProps) {
   const borderColor = focus ? theme.borders.focused : theme.borders.unfocused;
 
@@ -29,11 +41,16 @@ export function ChannelList({ channels, activeChannelId, focus }: ChannelListPro
       {channels.length === 0 ? (
         <Text color={theme.text.muted}>No channels</Text>
       ) : (
-        channels.map((channel) => (
-          <Text key={channel.id} color={channel.id === activeChannelId ? theme.text.accent : undefined}>
-            {channelLabel(channel)}
-          </Text>
-        ))
+        channels.map((channel, index) => {
+          const colour = colourForChannel(channel);
+          const isActive = channel.id === activeChannelId;
+          const background = isActive ? theme.palette.selection : index % 2 === 0 ? "#0B1D3A" : undefined;
+          return (
+            <Text key={channel.id} color={colour} backgroundColor={background} bold={isActive}>
+              {channelLabel(channel)}
+            </Text>
+          );
+        })
       )}
     </Box>
   );
