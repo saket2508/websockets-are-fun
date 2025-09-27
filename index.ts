@@ -19,6 +19,7 @@ import {
 import type {
   GatewayClientEvent,
   GatewayServerEvent,
+  ISO8601Timestamp,
   Snowflake,
   User,
 } from "./src/shared/types";
@@ -78,6 +79,8 @@ const clientEventSchema = z.discriminatedUnion("type", [
     channelId: z.string(),
     messageIds: z.array(z.string()),
   }),
+  z.object({ type: z.literal("typing_start"), channelId: z.string() }),
+  z.object({ type: z.literal("typing_stop"), channelId: z.string() }),
 ]);
 
 type ClientEvent = z.infer<typeof clientEventSchema>;
@@ -86,6 +89,7 @@ type WsContext = {
   session: Session;
   user: User;
   joinedChannels: Set<Snowflake>;
+  typingChannels: Set<Snowflake>;
 };
 
 const toJsonResponse = (status: number, body: unknown) =>
@@ -129,6 +133,13 @@ const serializeEvent = (event: GatewayServerEvent): string =>
 
 const channelTopic = (channelId: Snowflake): string =>
   `${CHANNEL_TOPIC_PREFIX}:${channelId}`;
+
+const TYPING_TIMEOUT_MS = 5_000;
+
+const typingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+
+const typingKey = (channelId: Snowflake, userId: Snowflake): string =>
+  `${channelId}:${userId}`;
 
 const server = Bun.serve({
   port: 3000,
@@ -212,6 +223,7 @@ const server = Bun.serve({
         session,
         user,
         joinedChannels: new Set<Snowflake>(),
+        typingChannels: new Set<Snowflake>(),
       } satisfies WsContext,
     });
 
@@ -326,6 +338,8 @@ const server = Bun.serve({
           if (ws.data.joinedChannels.has(channelId)) {
             ws.data.joinedChannels.delete(channelId);
             ws.unsubscribe(channelTopic(channelId));
+            ws.data.typingChannels.delete(channelId);
+            clearTypingState(channelId, ws.data.user.id, { notify: true });
           }
           break;
         }
@@ -354,6 +368,9 @@ const server = Bun.serve({
             );
             return;
           }
+
+          ws.data.typingChannels.delete(channel.id);
+          clearTypingState(channel.id, ws.data.user.id, { notify: true });
 
           const messageRecord = appendMessage({
             guildId: channel.guildId,
@@ -594,6 +611,39 @@ const server = Bun.serve({
           );
           break;
         }
+        case "typing_start": {
+          const channelId = event.channelId as Snowflake;
+          const channel = getChannelById(channelId);
+          if (!channel) {
+            return;
+          }
+
+          if (!ws.data.joinedChannels.has(channelId)) {
+            return;
+          }
+
+          if (!userHasAccessToGuild(ws.data.user.id, channel.guildId)) {
+            return;
+          }
+
+          ws.data.typingChannels.add(channelId);
+          const expiresAt = new Date(Date.now() + TYPING_TIMEOUT_MS).toISOString();
+          broadcastTypingStarted(channelId, ws.data.user.id, expiresAt);
+          scheduleTypingTimeout(channelId, ws.data.user.id, () => {
+            ws.data.typingChannels.delete(channelId);
+          });
+          break;
+        }
+        case "typing_stop": {
+          const channelId = event.channelId as Snowflake;
+          if (!ws.data.joinedChannels.has(channelId)) {
+            return;
+          }
+
+          ws.data.typingChannels.delete(channelId);
+          clearTypingState(channelId, ws.data.user.id, { notify: true });
+          break;
+        }
         case "emit_command": {
           ws.send(
             serializeEvent({
@@ -610,14 +660,79 @@ const server = Bun.serve({
       }
     },
     close(ws: ServerWebSocket<WsContext>) {
-      const { user, joinedChannels } = ws.data;
+      const { user, joinedChannels, typingChannels } = ws.data;
       for (const channelId of joinedChannels) {
         ws.unsubscribe(channelTopic(channelId));
       }
       joinedChannels.clear();
+      for (const channelId of typingChannels) {
+        clearTypingState(channelId, user.id, { notify: true });
+      }
+      typingChannels.clear();
       console.log(`${user.username} disconnected`);
     },
   },
 });
+
+function broadcastTypingStarted(
+  channelId: Snowflake,
+  userId: Snowflake,
+  expiresAt: ISO8601Timestamp,
+) {
+  const event: GatewayServerEvent = {
+    type: "typing_started",
+    channelId,
+    userId,
+    expiresAt,
+  };
+  server.publish(channelTopic(channelId), serializeEvent(event));
+}
+
+function broadcastTypingStopped(channelId: Snowflake, userId: Snowflake) {
+  const event: GatewayServerEvent = {
+    type: "typing_stopped",
+    channelId,
+    userId,
+  };
+  server.publish(channelTopic(channelId), serializeEvent(event));
+}
+
+function scheduleTypingTimeout(
+  channelId: Snowflake,
+  userId: Snowflake,
+  onExpire?: () => void,
+) {
+  const key = typingKey(channelId, userId);
+  const existing = typingTimeouts.get(key);
+  if (existing) {
+    clearTimeout(existing);
+  }
+
+  const timeout = setTimeout(() => {
+    typingTimeouts.delete(key);
+    if (onExpire) {
+      onExpire();
+    }
+    broadcastTypingStopped(channelId, userId);
+  }, TYPING_TIMEOUT_MS);
+
+  typingTimeouts.set(key, timeout);
+}
+
+function clearTypingState(
+  channelId: Snowflake,
+  userId: Snowflake,
+  options: { notify: boolean },
+) {
+  const key = typingKey(channelId, userId);
+  const existing = typingTimeouts.get(key);
+  if (existing) {
+    clearTimeout(existing);
+    typingTimeouts.delete(key);
+    if (options.notify) {
+      broadcastTypingStopped(channelId, userId);
+    }
+  }
+}
 
 console.log(`Server started. Listening on http://localhost:${server.port}`);

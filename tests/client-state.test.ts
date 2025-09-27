@@ -270,9 +270,53 @@ describe("client state reducer", () => {
     const actions = reduceGatewayEvent(event);
     expect(Array.isArray(actions)).toBe(true);
     if (Array.isArray(actions)) {
-      const [mutationAction, uiAction] = actions;
+      expect(actions.length).toBe(2);
+      const mutationAction = actions[0]!;
+      const uiAction = actions[1]!;
       expect(mutationAction.type).toBe("channel/mutationFailed");
       expect(uiAction.type).toBe("ui/setCommandError");
     }
+  });
+
+  test("typing_started registers active typers and discards expired entries", () => {
+    const startingState = cloneState();
+    startingState.typingByChannel = {
+      "channel-1": {
+        "stale-user": new Date(Date.now() - 10_000).toISOString(),
+      },
+    };
+
+    const event: GatewayServerEvent = {
+      type: "typing_started",
+      channelId: "channel-1",
+      userId: "user-42",
+      expiresAt: new Date(Date.now() + 5_000).toISOString(),
+    };
+
+    const action = reduceGatewayEvent(event) as ClientAction;
+    const nextState = clientReducer(startingState, action);
+
+    expect(nextState.typingByChannel["channel-1"]?.["user-42"]).toBe(event.expiresAt);
+    expect(nextState.typingByChannel["channel-1"]?.["stale-user"]).toBeUndefined();
+  });
+
+  test("typing_stopped removes typers from channel bucket", () => {
+    const startingState = cloneState();
+    startingState.typingByChannel = {
+      "channel-1": {
+        "user-42": new Date(Date.now() + 5_000).toISOString(),
+      },
+    };
+
+    const event: GatewayServerEvent = {
+      type: "typing_stopped",
+      channelId: "channel-1",
+      userId: "user-42",
+    };
+
+    const action = reduceGatewayEvent(event) as ClientAction;
+    const nextState = clientReducer(startingState, action);
+
+    expect(nextState.typingByChannel["channel-1"]).toBeUndefined();
   });
 });

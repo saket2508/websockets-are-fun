@@ -79,6 +79,7 @@ export type ClientState = {
   messagesByChannel: Record<Snowflake, ChannelLog>;
   optimisticMessages: Record<string, OptimisticMessage>;
   optimisticMutations: Record<string, OptimisticMutation>;
+  typingByChannel: Record<Snowflake, Record<Snowflake, ISO8601Timestamp>>;
   ui: UiState;
 };
 
@@ -174,6 +175,23 @@ type ReactionsUpdatedAction = {
   };
 };
 
+type TypingStartedAction = {
+  type: "channel/typingStarted";
+  payload: {
+    channelId: Snowflake;
+    userId: Snowflake;
+    expiresAt: ISO8601Timestamp;
+  };
+};
+
+type TypingStoppedAction = {
+  type: "channel/typingStopped";
+  payload: {
+    channelId: Snowflake;
+    userId: Snowflake;
+  };
+};
+
 type MessageEditOptimisticAction = {
   type: "channel/messageEditOptimistic";
   payload: {
@@ -242,7 +260,9 @@ type ClientAction =
   | MessageUpdatedAction
   | MessageDeletedAction
   | MutationFailedAction
-  | UiSetCommandErrorAction;
+  | UiSetCommandErrorAction
+  | TypingStartedAction
+  | TypingStoppedAction;
 
 const initialChannelLog = (): ChannelLog => ({
   messages: [],
@@ -348,6 +368,19 @@ const toggleReactionForUser = ({
   ];
 };
 
+const pruneTypingEntries = (
+  entries: Record<Snowflake, ISO8601Timestamp>,
+): Record<Snowflake, ISO8601Timestamp> => {
+  const now = Date.now();
+  const next: Record<Snowflake, ISO8601Timestamp> = {};
+  for (const [userId, expiresAt] of Object.entries(entries)) {
+    if (new Date(expiresAt).getTime() > now) {
+      next[userId as Snowflake] = expiresAt;
+    }
+  }
+  return next;
+};
+
 const firstAvailableTextChannel = (channels: Channel[]): Channel | null => {
   const textChannels = channels.filter((channel) => channel.type === "text");
   if (textChannels.length > 0) {
@@ -368,6 +401,7 @@ export const initialState: ClientState = {
   messagesByChannel: {},
   optimisticMessages: {},
   optimisticMutations: {},
+  typingByChannel: {},
   ui: {
     activeGuildId: null,
     activeChannelId: null,
@@ -425,6 +459,7 @@ export const clientReducer = (
         messagesByChannel: {},
         optimisticMessages: {},
         optimisticMutations: {},
+        typingByChannel: {},
       };
     }
     case "guild/bootstrap": {
@@ -838,6 +873,40 @@ export const clientReducer = (
         },
       };
     }
+    case "channel/typingStarted": {
+      const existing = state.typingByChannel[action.payload.channelId] ?? {};
+      const trimmed = pruneTypingEntries(existing);
+      trimmed[action.payload.userId] = action.payload.expiresAt;
+
+      return {
+        ...state,
+        typingByChannel: {
+          ...state.typingByChannel,
+          [action.payload.channelId]: trimmed,
+        },
+      };
+    }
+    case "channel/typingStopped": {
+      const existing = state.typingByChannel[action.payload.channelId];
+      if (!existing) {
+        return state;
+      }
+
+      const trimmed = pruneTypingEntries(existing);
+      delete trimmed[action.payload.userId];
+
+      const nextTyping = { ...state.typingByChannel };
+      if (Object.keys(trimmed).length === 0) {
+        delete nextTyping[action.payload.channelId];
+      } else {
+        nextTyping[action.payload.channelId] = trimmed;
+      }
+
+      return {
+        ...state,
+        typingByChannel: nextTyping,
+      };
+    }
     default:
       return state;
   }
@@ -929,6 +998,25 @@ export const reduceGatewayEvent = (
           clientRequestId: event.clientRequestId,
         },
       } satisfies MessageDeletedAction;
+    }
+    case "typing_started": {
+      return {
+        type: "channel/typingStarted",
+        payload: {
+          channelId: event.channelId,
+          userId: event.userId,
+          expiresAt: event.expiresAt,
+        },
+      } satisfies TypingStartedAction;
+    }
+    case "typing_stopped": {
+      return {
+        type: "channel/typingStopped",
+        payload: {
+          channelId: event.channelId,
+          userId: event.userId,
+        },
+      } satisfies TypingStoppedAction;
     }
     case "command_error": {
       if (!event.clientId) {

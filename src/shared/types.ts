@@ -155,6 +155,7 @@ export type GatewayServerEvent =
       userId: Snowflake;
       expiresAt: ISO8601Timestamp;
     }
+  | { type: "typing_stopped"; channelId: Snowflake; userId: Snowflake }
   | { type: "command_error"; command: CommandName; error: string; clientId?: Snowflake };
 
 // Client → server gateway intents.
@@ -182,7 +183,9 @@ export type GatewayClientEvent =
       clientRequestId?: string;
     }
   | { type: "emit_command"; command: SlashCommand }
-  | { type: "ack_history"; channelId: Snowflake; messageIds: Snowflake[] };
+  | { type: "ack_history"; channelId: Snowflake; messageIds: Snowflake[] }
+  | { type: "typing_start"; channelId: Snowflake }
+  | { type: "typing_stop"; channelId: Snowflake };
 
 export type HistoryRequest = {
   channelId: Snowflake;

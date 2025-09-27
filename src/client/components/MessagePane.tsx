@@ -24,6 +24,7 @@ type MessagePaneProps = {
   hasNewer: boolean;
   currentUserId: Snowflake | null;
   selectedMessageId: Snowflake | null;
+  typingNames: string[];
 };
 
 const formatTime = (iso: string) => {
@@ -62,6 +63,27 @@ const formatReactionSummary = (
   return parts.join("  ");
 };
 
+const formatTypingSummary = (names: string[]): string => {
+  if (names.length === 0) {
+    return "";
+  }
+
+  if (names.length === 1) {
+    return `${names[0]} is typing…`;
+  }
+
+  if (names.length === 2) {
+    return `${names[0]} and ${names[1]} are typing…`;
+  }
+
+  const [first, second, ...rest] = names;
+  const remaining = rest.length;
+  if (remaining === 1) {
+    return `${first}, ${second}, and ${rest[0]} are typing…`;
+  }
+  return `${first}, ${second}, and ${remaining} others are typing…`;
+};
+
 export function MessagePane({
   channelName,
   messages,
@@ -73,6 +95,7 @@ export function MessagePane({
   hasNewer,
   currentUserId,
   selectedMessageId,
+  typingNames,
 }: MessagePaneProps) {
   const borderColor = focus ? theme.borders.focused : theme.borders.unfocused;
   const hasAnyMessages = messages.length > 0 || optimisticMessages.length > 0;
@@ -156,6 +179,9 @@ export function MessagePane({
           })}
         </>
       )}
+      {typingNames.length > 0 ? (
+        <Text color={theme.text.accent}>{`   ${formatTypingSummary(typingNames)}`}</Text>
+      ) : null}
       {hasNewer ? <Text color={theme.text.muted}>↓ Newer messages below (use ↓)</Text> : null}
     </Box>
   );

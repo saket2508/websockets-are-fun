@@ -69,6 +69,20 @@ export class GatewayClient {
     });
   }
 
+  startTyping(channelId: Snowflake) {
+    this.send({
+      type: "typing_start",
+      channelId,
+    });
+  }
+
+  stopTyping(channelId: Snowflake) {
+    this.send({
+      type: "typing_stop",
+      channelId,
+    });
+  }
+
   sendChatMessage(input: { channelId: Snowflake; content: string; replyToId?: Snowflake | null; clientId?: string }) {
     this.send({
       type: "send_message",

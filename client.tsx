@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { Box, Text, render, useInput } from "ink";
 import kleur from "kleur";
@@ -71,6 +71,8 @@ const makeOptimisticId = customAlphabet(
   12
 );
 const VISIBLE_MESSAGE_COUNT = 20;
+const TYPING_REFRESH_INTERVAL_MS = 2_500;
+const TYPING_IDLE_TIMEOUT_MS = 4_000;
 
 const fetchGuestSession = async (): Promise<GuestAuthResponse> => {
   const response = await fetch(GUEST_AUTH_ENDPOINT, {
@@ -244,11 +246,117 @@ const MessageLayout = () => {
   const [currentFocus, setCurrentFocus] = useState<FocusTarget>("channels");
   const [messageOffset, setMessageOffset] = useState<number>(0);
   const acknowledgedHistory = useRef<Map<string, string>>(new Map());
+  const typingSignalRef = useRef<{
+    channelId: Snowflake | null;
+    active: boolean;
+    lastSentAt: number;
+    timeout: ReturnType<typeof setTimeout> | null;
+  }>({ channelId: null, active: false, lastSentAt: 0, timeout: null });
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
   const [selectedMessageId, setSelectedMessageId] = useState<Snowflake | null>(null);
   const commandError = state.ui.commandError;
 
+  const stopTyping = useCallback(() => {
+    const current = typingSignalRef.current;
+    if (current.timeout) {
+      clearTimeout(current.timeout);
+      current.timeout = null;
+    }
+
+    if (current.active && current.channelId) {
+      gatewayRef.current?.stopTyping(current.channelId);
+    }
+
+    current.channelId = null;
+    current.active = false;
+    current.lastSentAt = 0;
+  }, [gatewayRef]);
+
+  const scheduleTypingStop = useCallback(
+    (channelId: Snowflake) => {
+      const current = typingSignalRef.current;
+      if (current.timeout) {
+        clearTimeout(current.timeout);
+      }
+
+      current.timeout = setTimeout(() => {
+        if (typingSignalRef.current.channelId !== channelId) {
+          return;
+        }
+
+        if (typingSignalRef.current.active && typingSignalRef.current.channelId) {
+          gatewayRef.current?.stopTyping(channelId);
+        }
+
+        typingSignalRef.current.channelId = null;
+        typingSignalRef.current.active = false;
+        typingSignalRef.current.lastSentAt = 0;
+        typingSignalRef.current.timeout = null;
+      }, TYPING_IDLE_TIMEOUT_MS);
+    },
+    [gatewayRef],
+  );
+
+  const ensureTypingSignal = useCallback(
+    (channelId: Snowflake) => {
+      const current = typingSignalRef.current;
+      const now = Date.now();
+
+      if (current.channelId && current.channelId !== channelId && current.active) {
+        gatewayRef.current?.stopTyping(current.channelId);
+        current.active = false;
+        current.lastSentAt = 0;
+      }
+
+      const shouldSend =
+        !current.active ||
+        current.channelId !== channelId ||
+        now - current.lastSentAt > TYPING_REFRESH_INTERVAL_MS;
+
+      if (shouldSend) {
+        gatewayRef.current?.startTyping(channelId);
+        current.lastSentAt = now;
+        current.active = true;
+        current.channelId = channelId;
+      } else {
+        current.channelId = channelId;
+      }
+
+      scheduleTypingStop(channelId);
+    },
+    [gatewayRef, scheduleTypingStop],
+  );
+
   useClientBootstrap(gatewayRef, setAuthError);
+
+  useEffect(() => {
+    const activeChannelId = state.ui.activeChannelId;
+    const trimmed = composerValue.trim();
+
+    if (!activeChannelId) {
+      stopTyping();
+      return;
+    }
+
+    if (
+      typingSignalRef.current.channelId &&
+      typingSignalRef.current.channelId !== activeChannelId
+    ) {
+      stopTyping();
+    }
+
+    if (currentFocus === "composer" && trimmed.length > 0) {
+      ensureTypingSignal(activeChannelId);
+    } else if (typingSignalRef.current.active) {
+      stopTyping();
+    }
+  }, [composerValue, currentFocus, ensureTypingSignal, state.ui.activeChannelId, stopTyping]);
+
+  useEffect(() => {
+    return () => {
+      stopTyping();
+    };
+  }, [stopTyping]);
 
   const guildList = useMemo(
     () => Object.values(state.guilds).map((bundle) => bundle.guild),
@@ -298,6 +406,59 @@ const MessageLayout = () => {
       state.ui.activeChannelId,
     ]
   );
+
+  const typingNames = useMemo(() => {
+    const channelId = state.ui.activeChannelId;
+    if (!channelId) {
+      return [] as string[];
+    }
+
+    const entries = state.typingByChannel[channelId];
+    if (!entries) {
+      return [] as string[];
+    }
+
+    const now = Date.now();
+    const names: string[] = [];
+    for (const [userId, expiresAt] of Object.entries(entries)) {
+      if (new Date(expiresAt).getTime() <= now) {
+        continue;
+      }
+
+      if (userId === state.session?.user.id) {
+        continue;
+      }
+
+      let label: string | null = null;
+      const fromMessages = messageLog?.messages.find(
+        (message) => message.author.id === userId,
+      );
+      if (fromMessages) {
+        label = fromMessages.author.displayName ?? fromMessages.author.username;
+      }
+
+      if (!label) {
+        const member = state.members[userId as Snowflake];
+        if (member?.nickname) {
+          label = member.nickname;
+        }
+      }
+
+      if (!label) {
+        label = (userId as string).slice(-6);
+      }
+
+      names.push(label);
+    }
+
+    return names.sort((a, b) => a.localeCompare(b));
+  }, [
+    messageLog,
+    state.members,
+    state.session?.user.id,
+    state.typingByChannel,
+    state.ui.activeChannelId,
+  ]);
 
   useEffect(() => {
     if (
@@ -360,10 +521,11 @@ const MessageLayout = () => {
       setSelectedMessageId(null);
     }
     setMessageOffset(0);
+    stopTyping();
     setComposerMode(null);
     setComposerValue("");
     dispatch({ type: "ui/setCommandError", message: null });
-  }, [dispatch, state.ui.activeChannelId]);
+  }, [dispatch, state.ui.activeChannelId, stopTyping]);
 
   useEffect(() => {
     const latestVisible = visibleMessages[visibleMessages.length - 1];
@@ -469,6 +631,7 @@ const MessageLayout = () => {
     });
     gatewayRef.current?.toggleReaction(targetMessageId, emoji);
     dispatch({ type: "ui/setCommandError", message: null });
+    stopTyping();
     setComposerValue("");
     return true;
   };
@@ -526,6 +689,7 @@ const MessageLayout = () => {
       clientRequestId: requestId,
     });
 
+    stopTyping();
     setComposerMode(null);
     setComposerValue("");
     dispatch({ type: "ui/setCommandError", message: null });
@@ -549,6 +713,7 @@ const MessageLayout = () => {
     });
 
     if (composerMode?.type === "edit" && composerMode.messageId === message.id) {
+      stopTyping();
       setComposerMode(null);
       setComposerValue("");
     }
@@ -655,6 +820,7 @@ const MessageLayout = () => {
     }
 
     dispatchDeleteMutation(targetMessage);
+    stopTyping();
     setComposerValue("");
     return true;
   };
@@ -679,6 +845,7 @@ const MessageLayout = () => {
     }
 
     if (composerMode && key.escape) {
+      stopTyping();
       setComposerMode(null);
       setComposerValue("");
       dispatch({ type: "ui/setCommandError", message: null });
@@ -759,6 +926,7 @@ const MessageLayout = () => {
           const targetMessage = channelMessages.find((message) => message.id === composerMode.messageId);
           if (!targetMessage) {
             dispatch({ type: "ui/setCommandError", message: "Original message no longer available." });
+            stopTyping();
             setComposerMode(null);
             setComposerValue("");
             return;
@@ -766,6 +934,7 @@ const MessageLayout = () => {
 
           if (targetMessage.author.id !== state.session?.user.id) {
             dispatch({ type: "ui/setCommandError", message: "You can only edit your own messages." });
+            stopTyping();
             setComposerMode(null);
             setComposerValue("");
             return;
@@ -815,6 +984,7 @@ const MessageLayout = () => {
           content: trimmed,
           clientId,
         });
+        stopTyping();
         setComposerValue("");
         return;
       }
@@ -905,6 +1075,7 @@ const MessageLayout = () => {
           hasNewer={hasNewer}
           currentUserId={state.session?.user.id ?? null}
           selectedMessageId={selectedMessageId}
+          typingNames={typingNames}
         />
         <MemberList
           members={state.members}

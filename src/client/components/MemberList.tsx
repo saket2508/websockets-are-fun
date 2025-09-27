@@ -44,7 +44,8 @@ export function MemberList({ members, memberIds, focus }: MemberListProps) {
           const colour = palette[colourIndexFor(member.userId)];
           return (
             <Text key={memberId} color={colour}>
-              {member.muted ? "🔇" : "🟢"} {displayNameForMember(member)}
+              {member.muted ? "🔇 " : "   "}
+              {displayNameForMember(member)}
             </Text>
           );
         })
