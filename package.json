@@ -9,6 +9,7 @@
     "dev": "bun --hot run index.ts",
     "typecheck": "bunx tsc --noEmit",
     "db:migrate": "bun run src/server/database.ts --migrate",
+    "db:reset": "bun run src/server/database.ts --reset",
     "db:seed": "bun run scripts/seed.ts"
   },
   "devDependencies": {
