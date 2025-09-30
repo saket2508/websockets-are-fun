@@ -1,6 +1,9 @@
 # AI
 .cursor/
 
+# documentation
+# (track docs/ so sprint notes and plans are committed)
+
 # dependencies (bun install)
 node_modules
 
@@ -40,3 +43,10 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 *.md
 !README.md
 !AGENTS.md
+!docs/*.md
+
+# sqlite databases
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+chat.*
