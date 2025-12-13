@@ -1,4 +1,4 @@
-# Discord-Style Terminal Chat (Bun + Ink)
+# ShellChat (Bun + Ink)
 
 A Discord-inspired chat experience that runs entirely in your terminal. The Bun WebSocket server streams typed gateway events from a SQLite backing store, while an Ink-powered client renders guild/channel rails, live message feeds, optimistic messaging, reactions, and typing presence.
 
